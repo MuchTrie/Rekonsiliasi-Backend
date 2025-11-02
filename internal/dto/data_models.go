@@ -27,18 +27,24 @@ type SwitchingReconciliationData struct {
 
 // SwitchingSettlementData represents switching settlement data
 type SwitchingSettlementData struct {
-	SwitchingReconciliationData
-	ConvenienceFee string
-	InterchangeFee string
+	RRN             string
+	MerchantPAN     string
+	MerchantCriteria string
+	TraceNo         string
+	TanggalTrx      string
+	JamTrx          string
+	TrxCode         string
+	ConvenienceFee  string
+	InterchangeFee  string
 }
 
 // ReconciliationCoreResult represents core result
 type ReconciliationCoreResult struct {
-	RRN          string `csv:"rrn"`
-	Reff         string `csv:"reff"`
-	Status       string `csv:"status"`
-	MatchStatus  string `csv:"match_status"`
-	InvoiceNumber string `csv:"invoice_number"`
+	RRN              string `csv:"rrn"`
+	Reff             string `csv:"reff"`
+	Status           string `csv:"status"`
+	MatchStatus      string `csv:"match_status"`
+	InvoiceNumber    string `csv:"invoice_number"`
 	MerchantCriteria string `csv:"merchant_criteria"`
 	MerchantPAN      string `csv:"merchant_pan"`
 	ProcessCode      string `csv:"process_code"`
@@ -48,21 +54,30 @@ type ReconciliationCoreResult struct {
 
 // ReconciliationSwitchingResult represents reconciliation result
 type ReconciliationSwitchingResult struct {
-	RRN                    string `csv:"rrn"`
-	Reff                   string `csv:"reff"`
-	Status                 string `csv:"status"`
-	MatchStatus            string `csv:"match_status"`
-	MerchantPAN            string `csv:"merchant_pan"`
-	MerchantCriteria       string `csv:"merchant_criteria"`
-	InvoiceNumber          string `csv:"invoice_number"`
-	CreatedDate            string `csv:"created_date"`
-	CreatedTime            string `csv:"created_time"`
-	ProcessCode            string `csv:"process_code"`
+	RRN              string `csv:"rrn"`
+	Reff             string `csv:"reff"`
+	Status           string `csv:"status"`
+	MatchStatus      string `csv:"match_status"`
+	MerchantPAN      string `csv:"merchant_pan"`
+	MerchantCriteria string `csv:"merchant_criteria"`
+	InvoiceNumber    string `csv:"invoice_number"`
+	CreatedDate      string `csv:"created_date"`
+	CreatedTime      string `csv:"created_time"`
+	ProcessingCode   string `csv:"processing_code"`
 }
 
 // SettlementSwitchingResult represents settlement result
 type SettlementSwitchingResult struct {
-	ReconciliationSwitchingResult
-	InterchangeFee string `csv:"interchange_fee"`
-	ConvenienceFee string `csv:"convenience_fee"`
+	RRN              string `csv:"rrn"`
+	Reff             string `csv:"reff"`
+	Status           string `csv:"status"`
+	MatchStatus      string `csv:"match_status"`
+	MerchantPAN      string `csv:"merchant_pan"`
+	MerchantCriteria string `csv:"merchant_criteria"`
+	InvoiceNumber    string `csv:"invoice_number"`
+	CreatedDate      string `csv:"created_date"`
+	CreatedTime      string `csv:"created_time"`
+	ProcessingCode   string `csv:"processing_code"`
+	InterchangeFee   string `csv:"interchange_fee"`
+	ConvenienceFee   string `csv:"convenience_fee"`
 }
