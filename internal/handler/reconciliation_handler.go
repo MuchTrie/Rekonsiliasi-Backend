@@ -118,15 +118,17 @@ func (h *ReconciliationHandler) ProcessReconciliation(c *gin.Context) {
 			*vfk.reconDest = validReconFiles
 		}
 		
-		// Settlement files
+		// Settlement files - use ValidateSettlementFile which accepts any extension
 		if settleFiles := form.File[vfk.settlementKey]; len(settleFiles) > 0 {
+			h.log.Infof("Found %d settlement file(s) for %s", len(settleFiles), vfk.settlementKey)
 			validSettleFiles := []*multipart.FileHeader{}
 			for _, settleFile := range settleFiles {
-				if err := h.validator.ValidateFile(settleFile); err != nil {
+				// Settlement files can have any extension, use special validator
+				if err := h.validator.ValidateSettlementFile(settleFile); err != nil {
 					h.log.Warnf("Skipping %s file %s: %v", vfk.settlementKey, settleFile.Filename, err)
 				} else {
 					validSettleFiles = append(validSettleFiles, settleFile)
-					h.log.Infof("Received %s: %s", vfk.settlementKey, settleFile.Filename)
+					h.log.Infof("Received %s: %s (size: %d bytes)", vfk.settlementKey, settleFile.Filename, settleFile.Size)
 				}
 			}
 			*vfk.settleDest = validSettleFiles
@@ -275,5 +277,88 @@ func (h *ReconciliationHandler) GetResultData(c *gin.Context) {
 		Success: true,
 		Message: "Result data retrieved successfully",
 		Data:    data,
+	})
+}
+
+// ConvertSettlement handles settlement file conversion from TXT to CSV
+func (h *ReconciliationHandler) ConvertSettlement(c *gin.Context) {
+	h.log.Info("Received settlement conversion request")
+	
+	// Parse multipart form
+	if err := c.Request.ParseMultipartForm(100 << 20); err != nil { // 100 MB max
+		h.log.Errorf("Failed to parse multipart form: %v", err)
+		c.JSON(http.StatusBadRequest, dto.APIResponse{
+			Success: false,
+			Message: "Failed to parse request",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	// Get settlement file
+	file, err := c.FormFile("settlement_file")
+	if err != nil {
+		h.log.Errorf("Failed to get settlement file: %v", err)
+		c.JSON(http.StatusBadRequest, dto.APIResponse{
+			Success: false,
+			Message: "Settlement file is required",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	// Validate settlement file (accepts any file format, will be processed as TXT)
+	if err := h.validator.ValidateSettlementFile(file); err != nil {
+		h.log.Errorf("Settlement file validation failed: %v", err)
+		c.JSON(http.StatusBadRequest, dto.APIResponse{
+			Success: false,
+			Message: "Invalid settlement file",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	h.log.Infof("Converting settlement file: %s (size: %d bytes)", file.Filename, file.Size)
+	
+	// Convert settlement file
+	result, err := h.service.ConvertSettlementFile(file)
+	if err != nil {
+		h.log.Errorf("Settlement conversion failed: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Settlement conversion failed",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	h.log.Infof("Settlement conversion completed: %s (%d records)", result.Filename, result.TotalRecords)
+	
+	c.JSON(http.StatusOK, dto.APIResponse{
+		Success: true,
+		Message: "Settlement file converted successfully",
+		Data:    result,
+	})
+}
+
+// GetConvertedFiles returns list of previously converted settlement files
+func (h *ReconciliationHandler) GetConvertedFiles(c *gin.Context) {
+	h.log.Info("Fetching converted settlement files")
+	
+	files, err := h.service.GetConvertedFiles()
+	if err != nil {
+		h.log.Errorf("Failed to get converted files: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Failed to retrieve converted files",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, dto.APIResponse{
+		Success: true,
+		Message: "Converted files retrieved successfully",
+		Data:    files,
 	})
 }

@@ -87,3 +87,24 @@ func (v *FileValidator) IsBINFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	return ext == ".bin" || ext == ".txt"
 }
+
+// ValidateSettlementFile melakukan validasi khusus untuk file settlement
+// File settlement bisa tanpa ekstensi atau dengan ekstensi apapun
+func (v *FileValidator) ValidateSettlementFile(file *multipart.FileHeader) error {
+	if file == nil {
+		return fmt.Errorf("file tidak boleh kosong")
+	}
+	
+	// Validasi ukuran file (jika ada limit)
+	if v.MaxFileSizeMB > 0 {
+		maxSize := v.MaxFileSizeMB * 1024 * 1024
+		if file.Size > maxSize {
+			return fmt.Errorf("ukuran file %d MB melebihi limit %d MB", 
+				file.Size/(1024*1024), v.MaxFileSizeMB)
+		}
+	}
+	
+	// Settlement file bisa tanpa ekstensi atau dengan ekstensi apapun
+	// Tidak perlu validasi ekstensi karena akan diproses sebagai TXT
+	return nil
+}

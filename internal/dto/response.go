@@ -74,3 +74,12 @@ type UploadResponse struct {
 	Vendors   map[string]FileInfo `json:"vendors"`
 	Message   string              `json:"message"`
 }
+
+// SettlementConversionResult adalah hasil konversi settlement file
+type SettlementConversionResult struct {
+	Filename       string                   `json:"filename"`
+	TotalRecords   int                      `json:"total_records"`
+	PreviewRecords []map[string]interface{} `json:"preview_records"`
+	DownloadURL    string                   `json:"download_url"`
+}
+

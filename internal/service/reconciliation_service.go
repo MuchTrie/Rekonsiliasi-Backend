@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +30,11 @@ type ReconciliationService struct {
 }
 
 // NewReconciliationService creates a new reconciliation service
-func NewReconciliationService(log *logrus.Logger) *ReconciliationService {
+func NewReconciliationService(log *logrus.Logger, uploadDir, resultsDir string) *ReconciliationService {
 	return &ReconciliationService{
 		log:        log,
-		uploadDir:  "uploads",
-		resultsDir: "results",
+		uploadDir:  uploadDir,
+		resultsDir: resultsDir,
 		jobCounter: 0, // Will be loaded from existing folders
 	}
 }
@@ -711,6 +712,7 @@ func (s *ReconciliationService) extractSettlementData(file *os.File) map[string]
 func parseSettlementDataLine(line string) map[string]string {
 	line = strings.TrimRight(line, " \t")
 	
+	// Extract Interchange Fee (last column, format: -123.00 or 123.00)
 	interchangeRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}$`)
 	interchangeMatches := interchangeRegex.FindStringIndex(line)
 	if interchangeMatches == nil {
@@ -721,6 +723,7 @@ func parseSettlementDataLine(line string) map[string]string {
 	
 	remaining = strings.TrimRight(remaining, " \t")
 	
+	// Extract Convenience Fee (second to last column, format: 0.00 C or 0.00 D)
 	convenienceRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}\s+[DC]$`)
 	convenienceMatches := convenienceRegex.FindStringIndex(remaining)
 	if convenienceMatches == nil {
@@ -729,19 +732,25 @@ func parseSettlementDataLine(line string) map[string]string {
 	convenienceFee := remaining[convenienceMatches[0]:convenienceMatches[1]]
 	remaining = remaining[:convenienceMatches[0]]
 	
+	// Split remaining fields by whitespace
 	parts := strings.Fields(remaining)
-	if len(parts) < 12 {
+	
+	// Expected format (based on actual file):
+	// 0:No 1:Trx_Code 2:Tanggal_Trx 3:Jam_Trx 4:Merchant_PAN 5:Trace_No 
+	// 6:Terminal_ID 7:Ref_No(RRN) 8:Acquirer 9:Issuer 10:Customer_PAN ...
+	
+	if len(parts) < 11 {
 		return nil
 	}
 	
 	return map[string]string{
-		"Ref_No":            parts[2],
-		"Merchant_PAN":      parts[3],
-		"Merchant_Criteria": parts[4],
-		"Trace_No":          parts[5],
-		"Tanggal_Trx":       parts[6],
-		"Jam_Trx":           parts[7],
-		"Trx_Code":          parts[8],
+		"Ref_No":            parts[7], // RRN is at index 7
+		"Merchant_PAN":      parts[4], // Merchant PAN at index 4
+		"Merchant_Criteria": parts[5], // Using Trace_No as criteria (or adjust as needed)
+		"Trace_No":          parts[5], // Trace No at index 5
+		"Tanggal_Trx":       parts[2], // Transaction date at index 2
+		"Jam_Trx":           parts[3], // Transaction time at index 3
+		"Trx_Code":          parts[1], // Transaction code at index 1
 		"Convenience_Fee":   convenienceFee,
 		"Interchange_Fee":   interchangeFee,
 	}
@@ -1225,4 +1234,148 @@ func extractCSVTags(t reflect.Type) []string {
 		}
 	}
 	return headers
+}
+
+// ConvertSettlementFile converts settlement TXT file to CSV and returns preview
+func (s *ReconciliationService) ConvertSettlementFile(file *multipart.FileHeader) (*dto.SettlementConversionResult, error) {
+	// Create converted directory for settlement conversion results
+	convertedDir := filepath.Join(s.resultsDir, "converted")
+	if err := os.MkdirAll(convertedDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create converted directory: %w", err)
+	}
+	
+	// Create temp directory for temporary upload
+	tempDir := filepath.Join(s.uploadDir, "temp")
+	if err := os.MkdirAll(tempDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	
+	// Generate unique filename for converted CSV
+	timestamp := time.Now().Format("20060102_150405")
+	baseFilename := strings.TrimSuffix(file.Filename, filepath.Ext(file.Filename))
+	csvFilename := fmt.Sprintf("%s_converted_%s.csv", baseFilename, timestamp)
+	csvPath := filepath.Join(convertedDir, csvFilename)
+	
+	// Save uploaded TXT file temporarily
+	txtPath := filepath.Join(tempDir, file.Filename)
+	src, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open uploaded file: %w", err)
+	}
+	defer src.Close()
+	
+	dst, err := os.Create(txtPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		return nil, fmt.Errorf("failed to save temp file: %w", err)
+	}
+	dst.Close()
+	
+	// Convert TXT to CSV
+	if err := s.convertSettlementTxtToCsv(txtPath, csvPath); err != nil {
+		os.Remove(txtPath) // Clean up
+		return nil, fmt.Errorf("failed to convert settlement file: %w", err)
+	}
+	
+	// Clean up temp TXT file
+	os.Remove(txtPath)
+	
+	// Read CSV to get total records and preview
+	csvFile, err := os.Open(csvPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read converted CSV: %w", err)
+	}
+	defer csvFile.Close()
+	
+	reader := csv.NewReader(csvFile)
+	
+	// Read header
+	headers, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	}
+	
+	// Read all records for count
+	allRecords, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV records: %w", err)
+	}
+	
+	totalRecords := len(allRecords)
+	
+	// Build preview (limit to 100 records to prevent browser overflow)
+	previewLimit := 100
+	if totalRecords < previewLimit {
+		previewLimit = totalRecords
+	}
+	
+	previewRecords := make([]map[string]interface{}, 0, previewLimit)
+	for i := 0; i < previewLimit; i++ {
+		record := make(map[string]interface{})
+		for j, header := range headers {
+			if j < len(allRecords[i]) {
+				record[header] = allRecords[i][j]
+			}
+		}
+		previewRecords = append(previewRecords, record)
+	}
+	
+	// Build download URL
+	downloadURL := fmt.Sprintf("/api/download/converted/%s", csvFilename)
+	
+	return &dto.SettlementConversionResult{
+		Filename:       csvFilename,
+		TotalRecords:   totalRecords,
+		PreviewRecords: previewRecords,
+		DownloadURL:    downloadURL,
+	}, nil
+}
+
+// GetConvertedFiles returns list of previously converted settlement files
+func (s *ReconciliationService) GetConvertedFiles() ([]map[string]interface{}, error) {
+	convertedDir := filepath.Join(s.resultsDir, "converted")
+	
+	// Create directory if not exists
+	if err := os.MkdirAll(convertedDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create converted directory: %w", err)
+	}
+	
+	// Read directory contents
+	entries, err := os.ReadDir(convertedDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read converted directory: %w", err)
+	}
+	
+	files := make([]map[string]interface{}, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".csv") {
+			continue
+		}
+		
+		info, err := entry.Info()
+		if err != nil {
+			s.log.Warnf("Failed to get file info for %s: %v", entry.Name(), err)
+			continue
+		}
+		
+		files = append(files, map[string]interface{}{
+			"filename":     entry.Name(),
+			"size":         info.Size(),
+			"modified_at":  info.ModTime(),
+			"download_url": fmt.Sprintf("/api/download/converted/%s", entry.Name()),
+		})
+	}
+	
+	// Sort by modified time (newest first)
+	sort.Slice(files, func(i, j int) bool {
+		timeI := files[i]["modified_at"].(time.Time)
+		timeJ := files[j]["modified_at"].(time.Time)
+		return timeI.After(timeJ)
+	})
+	
+	return files, nil
 }
