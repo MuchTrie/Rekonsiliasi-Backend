@@ -44,8 +44,8 @@ func (h *ReconciliationHandler) HealthCheck(c *gin.Context) {
 func (h *ReconciliationHandler) ProcessReconciliation(c *gin.Context) {
 	h.log.Info("Received reconciliation request")
 	
-	// Parse multipart form
-	if err := c.Request.ParseMultipartForm(200 << 20); err != nil { // 200 MB max
+	// Parse multipart form (allow larger files for multi-file upload)
+	if err := c.Request.ParseMultipartForm(500 << 20); err != nil { // 500 MB max
 		h.log.Errorf("Failed to parse multipart form: %v", err)
 		c.JSON(http.StatusBadRequest, dto.APIResponse{
 			Success: false,
@@ -55,80 +55,95 @@ func (h *ReconciliationHandler) ProcessReconciliation(c *gin.Context) {
 		return
 	}
 	
-	// Get core file
-	coreFile, err := c.FormFile("core_file")
-	if err != nil {
-		h.log.Errorf("Core file is required: %v", err)
+	// Get multiple core files
+	form := c.Request.MultipartForm
+	coreFiles := form.File["core_files"]
+	
+	if len(coreFiles) == 0 {
+		h.log.Error("At least one core file is required")
 		c.JSON(http.StatusBadRequest, dto.APIResponse{
 			Success: false,
-			Message: "Core file is required",
-			Error:   err.Error(),
+			Message: "At least one core file is required",
+			Error:   "No core files uploaded",
 		})
 		return
 	}
 	
-	// Validate core file
-	if err := h.validator.ValidateCSVFile(coreFile); err != nil {
-		h.log.Errorf("Core file validation failed: %v", err)
-		c.JSON(http.StatusBadRequest, dto.APIResponse{
-			Success: false,
-			Message: "Core file validation failed",
-			Error:   err.Error(),
-		})
-		return
+	// Validate core files
+	for i, coreFile := range coreFiles {
+		if err := h.validator.ValidateCSVFile(coreFile); err != nil {
+			h.log.Errorf("Core file %d (%s) validation failed: %v", i, coreFile.Filename, err)
+			c.JSON(http.StatusBadRequest, dto.APIResponse{
+				Success: false,
+				Message: fmt.Sprintf("Core file validation failed: %s", coreFile.Filename),
+				Error:   err.Error(),
+			})
+			return
+		}
 	}
+	
+	h.log.Infof("Received %d core file(s)", len(coreFiles))
 	
 	// Build request
 	req := &dto.ReconciliationRequest{
-		CoreFile: coreFile,
+		CoreFiles: coreFiles,
 	}
 	
-	// Get vendor files (optional)
-	vendorFiles := []struct {
+	// Get vendor files (multi-file support)
+	vendorFileKeys := []struct {
 		reconKey      string
 		settlementKey string
-		reconDest     **multipart.FileHeader
-		settleDest    **multipart.FileHeader
+		reconDest     *[]*multipart.FileHeader
+		settleDest    *[]*multipart.FileHeader
 	}{
-		{"alto_recon_file", "alto_settlement_file", &req.AltoReconFile, &req.AltoSettlementFile},
-		{"jalin_recon_file", "jalin_settlement_file", &req.JalinReconFile, &req.JalinSettlementFile},
-		{"aj_recon_file", "aj_settlement_file", &req.AJReconFile, &req.AJSettlementFile},
-		{"rinti_recon_file", "rinti_settlement_file", &req.RintiReconFile, &req.RintiSettlementFile},
+		{"alto_recon_files", "alto_settlement_files", &req.AltoReconFiles, &req.AltoSettlementFiles},
+		{"jalin_recon_files", "jalin_settlement_files", &req.JalinReconFiles, &req.JalinSettlementFiles},
+		{"aj_recon_files", "aj_settlement_files", &req.AJReconFiles, &req.AJSettlementFiles},
+		{"rinti_recon_files", "rinti_settlement_files", &req.RintiReconFiles, &req.RintiSettlementFiles},
 	}
 	
-	for _, vf := range vendorFiles {
-		// Recon file
-		if reconFile, err := c.FormFile(vf.reconKey); err == nil {
-			if err := h.validator.ValidateCSVFile(reconFile); err != nil {
-				h.log.Warnf("Skipping %s: %v", vf.reconKey, err)
-			} else {
-				*vf.reconDest = reconFile
-				h.log.Infof("Received %s: %s", vf.reconKey, reconFile.Filename)
+	for _, vfk := range vendorFileKeys {
+		// Recon files
+		if reconFiles := form.File[vfk.reconKey]; len(reconFiles) > 0 {
+			validReconFiles := []*multipart.FileHeader{}
+			for _, reconFile := range reconFiles {
+				// Allow both CSV and TXT for recon files
+				if err := h.validator.ValidateFile(reconFile); err != nil {
+					h.log.Warnf("Skipping %s file %s: %v", vfk.reconKey, reconFile.Filename, err)
+				} else {
+					validReconFiles = append(validReconFiles, reconFile)
+					h.log.Infof("Received %s: %s", vfk.reconKey, reconFile.Filename)
+				}
 			}
+			*vfk.reconDest = validReconFiles
 		}
 		
-		// Settlement file
-		if settleFile, err := c.FormFile(vf.settlementKey); err == nil {
-			if err := h.validator.ValidateFile(settleFile); err != nil {
-				h.log.Warnf("Skipping %s: %v", vf.settlementKey, err)
-			} else {
-				*vf.settleDest = settleFile
-				h.log.Infof("Received %s: %s", vf.settlementKey, settleFile.Filename)
+		// Settlement files
+		if settleFiles := form.File[vfk.settlementKey]; len(settleFiles) > 0 {
+			validSettleFiles := []*multipart.FileHeader{}
+			for _, settleFile := range settleFiles {
+				if err := h.validator.ValidateFile(settleFile); err != nil {
+					h.log.Warnf("Skipping %s file %s: %v", vfk.settlementKey, settleFile.Filename, err)
+				} else {
+					validSettleFiles = append(validSettleFiles, settleFile)
+					h.log.Infof("Received %s: %s", vfk.settlementKey, settleFile.Filename)
+				}
 			}
+			*vfk.settleDest = validSettleFiles
 		}
 	}
 	
-	// Check if at least one vendor file is provided
-	vendors := req.GetVendorFiles()
-	if len(vendors) == 0 {
+	// Check if at least one vendor can be processed
+	vendorMap := req.GetVendorFilesMap()
+	if len(vendorMap) == 0 {
 		c.JSON(http.StatusBadRequest, dto.APIResponse{
 			Success: false,
-			Message: "At least one vendor file (recon or settlement) is required",
+			Message: "No valid vendor detected. Please ensure core files contain vendor name (ALTO/JALIN/AJ/RINTI) and at least one vendor has recon or settlement files.",
 		})
 		return
 	}
 	
-	h.log.Infof("Processing %d vendors", len(vendors))
+	h.log.Infof("Processing %d vendor(s)", len(vendorMap))
 	
 	// Process reconciliation
 	result, err := h.service.ProcessReconciliation(req)

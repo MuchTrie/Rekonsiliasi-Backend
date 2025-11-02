@@ -24,6 +24,8 @@ type ReconciliationService struct {
 	log        *logrus.Logger
 	uploadDir  string
 	resultsDir string
+	jobCounter int // Counter for 4-digit ID
+	mu         sync.Mutex
 }
 
 // NewReconciliationService creates a new reconciliation service
@@ -32,14 +34,15 @@ func NewReconciliationService(log *logrus.Logger) *ReconciliationService {
 		log:        log,
 		uploadDir:  "uploads",
 		resultsDir: "results",
+		jobCounter: 0, // Will be loaded from existing folders
 	}
 }
 
 // ProcessReconciliation memproses rekonsiliasi dari file yang diupload
 func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationRequest) (*dto.ReconciliationResult, error) {
-	// Generate job ID dengan format tanggal: DDMMYYYY
+	// Generate job ID dengan format: XXXX-DD-MM-YYYY
 	now := time.Now()
-	jobID := now.Format("02012006") // Format: DDMMYYYY
+	jobID := s.generateJobID(now)
 	jobDir := filepath.Join(s.resultsDir, jobID)
 	
 	// Buat direktori untuk job ini
@@ -49,45 +52,40 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 	
 	s.log.Infof("Processing reconciliation job %s", jobID)
 	
-	// 1. Save core file
-	coreFilePath := filepath.Join(jobDir, "core_file.csv")
-	if err := s.saveUploadedFile(req.CoreFile, coreFilePath); err != nil {
-		return nil, fmt.Errorf("failed to save core file: %w", err)
+	// Get vendor files map (auto-detect vendor from CORE filenames)
+	vendorFilesMap := req.GetVendorFilesMap()
+	
+	if len(vendorFilesMap) == 0 {
+		return nil, fmt.Errorf("no valid vendor detected from CORE files. Please include vendor name (ALTO/JALIN/AJ/RINTI) in filename")
 	}
 	
-	// 2. Extract core data
-	coreData, err := s.extractCoreData(coreFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract core data: %w", err)
-	}
-	
-	s.log.Infof("Loaded %d core records", len(coreData))
-	
-	// 3. Process vendor files
-	vendorFiles := req.GetVendorFiles()
+	// Process each vendor
 	var wg sync.WaitGroup
-	results := make([]dto.VendorResult, len(vendorFiles))
+	results := make([]dto.VendorResult, 0, len(vendorFilesMap))
+	resultsMu := sync.Mutex{}
 	
-	for i, vf := range vendorFiles {
+	for vendor, vf := range vendorFilesMap {
 		wg.Add(1)
-		go func(idx int, vendorFile dto.VendorFiles) {
+		go func(vendorName string, vendorFile *dto.VendorFiles) {
 			defer wg.Done()
 			
-			vendorData := coreData[vendorFile.Vendor]
-			result := s.processVendor(vendorFile, vendorData, jobDir)
-			results[idx] = result
-		}(i, vf)
+			result := s.processVendorMultiFile(vendorFile, jobDir)
+			
+			resultsMu.Lock()
+			results = append(results, result)
+			resultsMu.Unlock()
+		}(vendor, vf)
 	}
 	
 	wg.Wait()
 	
-	// 4. Calculate totals
+	// Calculate totals
 	totalRecords := 0
 	for _, vr := range results {
 		totalRecords += len(vr.ReconResults) + len(vr.SettlementResults)
 	}
 	
-	// 5. Build result
+	// Build result
 	reconResult := &dto.ReconciliationResult{
 		JobID:        jobID,
 		Status:       "completed",
@@ -95,7 +93,7 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 		ProcessedAt:  time.Now(),
 		TotalRecords: totalRecords,
 		Vendors:      results,
-		DownloadURLs: s.buildDownloadURLs(jobID, vendorFiles),
+		DownloadURLs: s.buildDownloadURLsMulti(jobID, vendorFilesMap),
 	}
 	
 	s.log.Infof("Job %s completed with %d total records", jobID, totalRecords)
@@ -103,73 +101,234 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 	return reconResult, nil
 }
 
-// processVendor memproses satu vendor (recon & settlement)
-func (s *ReconciliationService) processVendor(vf dto.VendorFiles, coreData []*dto.Data, jobDir string) dto.VendorResult {
+// generateJobID generates job ID in format: XXXX-DD-MM-YYYY
+func (s *ReconciliationService) generateJobID(t time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	
+	// Load max ID from existing folders
+	if s.jobCounter == 0 {
+		s.jobCounter = s.getLastJobID()
+	}
+	
+	s.jobCounter++
+	
+	return fmt.Sprintf("%04d-%s", s.jobCounter, t.Format("02-01-2006"))
+}
+
+// getLastJobID reads existing result folders and returns the highest ID
+func (s *ReconciliationService) getLastJobID() int {
+	entries, err := os.ReadDir(s.resultsDir)
+	if err != nil {
+		return 0
+	}
+	
+	maxID := 0
+	pattern := regexp.MustCompile(`^(\d{4})-\d{2}-\d{2}-\d{4}$`)
+	
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		
+		matches := pattern.FindStringSubmatch(entry.Name())
+		if len(matches) > 1 {
+			var id int
+			fmt.Sscanf(matches[1], "%d", &id)
+			if id > maxID {
+				maxID = id
+			}
+		}
+	}
+	
+	return maxID
+}
+
+// processVendorMultiFile memproses satu vendor dengan multi-file support
+func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobDir string) dto.VendorResult {
 	result := dto.VendorResult{
 		Vendor: vf.Vendor,
 	}
 	
-	// Process Recon file
-	if vf.ReconFile != nil {
-		reconPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon.csv", vf.Vendor))
-		if err := s.saveUploadedFile(vf.ReconFile, reconPath); err != nil {
-			s.log.Errorf("Failed to save %s recon file: %v", vf.Vendor, err)
-		} else {
-			file, err := os.Open(reconPath)
-			if err != nil {
-				s.log.Errorf("Failed to open %s recon file: %v", vf.Vendor, err)
-			} else {
-				defer file.Close()
-				switchingData := s.extractReconciliationData(file)
-				oldResults := compareReconRRNs(coreData, switchingData)
-				
-				// Convert to web DTO
-				result.ReconResults = s.convertReconResults(oldResults)
-				result.ReconMatchCount = s.countMatches(result.ReconResults)
-				result.ReconMismatchCount = len(result.ReconResults) - result.ReconMatchCount
-				
-				// Generate CSV hasil rekonsiliasi
-				resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_result.csv", vf.Vendor))
-				if err := s.writeReconResultCSV(resultCSVPath, oldResults); err != nil {
-					s.log.Errorf("Failed to write recon result CSV: %v", err)
-				} else {
-					s.log.Infof("Generated recon result CSV: %s", resultCSVPath)
-				}
+	// 1. Extract CORE data for this vendor
+	var coreData []*dto.Data
+	if vf.CoreFile != nil {
+		corePath := filepath.Join(jobDir, fmt.Sprintf("%s_core.csv", vf.Vendor))
+		if err := s.saveUploadedFile(vf.CoreFile, corePath); err != nil {
+			s.log.Errorf("Failed to save %s core file: %v", vf.Vendor, err)
+			return result
+		}
+		
+		var err error
+		coreData, err = s.extractSingleCoreData(corePath)
+		if err != nil {
+			s.log.Errorf("Failed to extract %s core data: %v", vf.Vendor, err)
+			return result
+		}
+		
+		s.log.Infof("Loaded %d core records for vendor %s", len(coreData), vf.Vendor)
+	}
+	
+	// 2. Process multiple Recon files
+	if len(vf.ReconFiles) > 0 {
+		allReconData := make(map[string]dto.SwitchingReconciliationData)
+		
+		for idx, reconFile := range vf.ReconFiles {
+			reconPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_%d.txt", vf.Vendor, idx))
+			if err := s.saveUploadedFile(reconFile, reconPath); err != nil {
+				s.log.Errorf("Failed to save %s recon file %d: %v", vf.Vendor, idx, err)
+				continue
 			}
+			
+			// Convert TXT to CSV
+			csvPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_%d.csv", vf.Vendor, idx))
+			if err := s.convertReconTxtToCsv(reconPath, csvPath); err != nil {
+				s.log.Errorf("Failed to convert %s recon file %d: %v", vf.Vendor, idx, err)
+				continue
+			}
+			
+			file, err := os.Open(csvPath)
+			if err != nil {
+				s.log.Errorf("Failed to open %s recon CSV %d: %v", vf.Vendor, idx, err)
+				continue
+			}
+			
+			reconData := s.extractReconciliationDataNew(file)
+			file.Close()
+			
+			// Merge data
+			for rrn, data := range reconData {
+				allReconData[rrn] = data
+			}
+		}
+		
+		s.log.Infof("Loaded total %d recon records for vendor %s", len(allReconData), vf.Vendor)
+		
+		// Compare with CORE
+		oldResults := compareReconRRNs(coreData, allReconData)
+		result.ReconResults = s.convertReconResults(oldResults)
+		result.ReconMatchCount = s.countMatches(result.ReconResults)
+		result.ReconMismatchCount = len(result.ReconResults) - result.ReconMatchCount
+		
+		// Generate CSV hasil rekonsiliasi
+		resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_result.csv", vf.Vendor))
+		if err := s.writeReconResultCSV(resultCSVPath, oldResults); err != nil {
+			s.log.Errorf("Failed to write recon result CSV: %v", err)
+		} else {
+			s.log.Infof("Generated recon result CSV: %s", resultCSVPath)
 		}
 	}
 	
-	// Process Settlement file
-	if vf.SettlementFile != nil {
-		settlementPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement.txt", vf.Vendor))
-		if err := s.saveUploadedFile(vf.SettlementFile, settlementPath); err != nil {
-			s.log.Errorf("Failed to save %s settlement file: %v", vf.Vendor, err)
-		} else {
+	// 3. Process multiple Settlement files
+	if len(vf.SettlementFiles) > 0 {
+		allSettlementData := make(map[string]dto.SwitchingSettlementData)
+		
+		for idx, settlementFile := range vf.SettlementFiles {
+			settlementPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_%d.txt", vf.Vendor, idx))
+			if err := s.saveUploadedFile(settlementFile, settlementPath); err != nil {
+				s.log.Errorf("Failed to save %s settlement file %d: %v", vf.Vendor, idx, err)
+				continue
+			}
+			
+			// Convert TXT to CSV
+			csvPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_%d.csv", vf.Vendor, idx))
+			if err := s.convertSettlementTxtToCsv(settlementPath, csvPath); err != nil {
+				s.log.Errorf("Failed to convert %s settlement file %d: %v", vf.Vendor, idx, err)
+				continue
+			}
+			
 			file, err := os.Open(settlementPath)
 			if err != nil {
-				s.log.Errorf("Failed to open %s settlement file: %v", vf.Vendor, err)
-			} else {
-				defer file.Close()
-				switchingData := s.extractSettlementData(file)
-				oldResults := compareSettlementRRNs(coreData, switchingData)
-				
-				// Convert to web DTO
-				result.SettlementResults = s.convertSettlementResults(oldResults)
-				result.SettlementMatchCount = s.countMatchesSettlement(result.SettlementResults)
-				result.SettlementMismatchCount = len(result.SettlementResults) - result.SettlementMatchCount
-				
-				// Generate CSV hasil settlement
-				resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_result.csv", vf.Vendor))
-				if err := s.writeSettlementResultCSV(resultCSVPath, oldResults); err != nil {
-					s.log.Errorf("Failed to write settlement result CSV: %v", err)
-				} else {
-					s.log.Infof("Generated settlement result CSV: %s", resultCSVPath)
-				}
+				s.log.Errorf("Failed to open %s settlement file %d: %v", vf.Vendor, idx, err)
+				continue
 			}
+			
+			settlementData := s.extractSettlementData(file)
+			file.Close()
+			
+			// Merge data
+			for rrn, data := range settlementData {
+				allSettlementData[rrn] = data
+			}
+		}
+		
+		s.log.Infof("Loaded total %d settlement records for vendor %s", len(allSettlementData), vf.Vendor)
+		
+		// Compare with CORE
+		oldResults := compareSettlementRRNs(coreData, allSettlementData)
+		result.SettlementResults = s.convertSettlementResults(oldResults)
+		result.SettlementMatchCount = s.countMatchesSettlement(result.SettlementResults)
+		result.SettlementMismatchCount = len(result.SettlementResults) - result.SettlementMatchCount
+		
+		// Generate CSV hasil settlement
+		resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_result.csv", vf.Vendor))
+		if err := s.writeSettlementResultCSV(resultCSVPath, oldResults); err != nil {
+			s.log.Errorf("Failed to write settlement result CSV: %v", err)
+		} else {
+			s.log.Infof("Generated settlement result CSV: %s", resultCSVPath)
 		}
 	}
 	
 	return result
+}
+
+// extractSingleCoreData mengekstrak data dari satu CORE file dengan format baru
+func (s *ReconciliationService) extractSingleCoreData(path string) ([]*dto.Data, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	
+	reader := csv.NewReader(file)
+	reader.Comma = ','
+	reader.FieldsPerRecord = -1
+	
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	
+	var result []*dto.Data
+	
+	// Skip header row (index 0)
+	for i, row := range records {
+		if i == 0 {
+			continue
+		}
+		
+		// Format file CORE baru: kolom 13 adalah RRN
+		if len(row) < 14 {
+			s.log.Warnf("Row %d has insufficient columns (%d), skipping", i, len(row))
+			continue
+		}
+		
+		rrn := strings.TrimSpace(row[13]) // RRN di kolom index 13
+		if rrn == "" {
+			continue
+		}
+		
+		// Extract other fields based on new CORE format
+		data := &dto.Data{
+			RRN:          rrn,
+			Reff:         strings.TrimSpace(row[10]),  // Reff di kolom 10
+			ClientReff:   strings.TrimSpace(row[11]),  // Client Reff di kolom 11
+			SupplierReff: strings.TrimSpace(row[12]),  // Supplier Reff di kolom 12
+			Status:       strings.TrimSpace(row[1]),   // Status di kolom 1
+			CreatedDate:  strings.TrimSpace(row[3]),   // Created Date di kolom 3
+			CreatedTime:  strings.TrimSpace(row[4]),   // Created Time di kolom 4
+			PaidDate:     strings.TrimSpace(row[5]),   // Paid Date di kolom 5
+			PaidTime:     strings.TrimSpace(row[6]),   // Paid Time di kolom 6
+		}
+		
+		if len(row) > 14 {
+			data.Vendor = strings.TrimSpace(row[14]) // Supplier Name di kolom 14
+		}
+		
+		result = append(result, data)
+	}
+	
+	return result, nil
 }
 
 // saveUploadedFile menyimpan file yang diupload ke disk
@@ -245,7 +404,7 @@ func (s *ReconciliationService) extractCoreData(path string) (map[string][]*dto.
 	return result, nil
 }
 
-// extractReconciliationData mengekstrak data rekonsiliasi dari switching file
+// extractReconciliationData mengekstrak data rekonsiliasi dari switching file (OLD FORMAT - kept for backward compatibility)
 func (s *ReconciliationService) extractReconciliationData(file *os.File) map[string]dto.SwitchingReconciliationData {
 	reader := csv.NewReader(file)
 	reader.Comma = ','
@@ -287,6 +446,203 @@ func (s *ReconciliationService) extractReconciliationData(file *os.File) map[str
 	
 	s.log.Infof("Loaded %d records from reconciliation file", len(result))
 	return result
+}
+
+// extractReconciliationDataNew mengekstrak data rekonsiliasi dari format baru (pipe-delimited TXT converted to CSV)
+func (s *ReconciliationService) extractReconciliationDataNew(file *os.File) map[string]dto.SwitchingReconciliationData {
+	reader := csv.NewReader(file)
+	reader.Comma = ','
+	reader.FieldsPerRecord = -1
+	
+	records, err := reader.ReadAll()
+	if err != nil || len(records) < 2 {
+		s.log.Errorf("Failed to read reconciliation file: %v", err)
+		return make(map[string]dto.SwitchingReconciliationData)
+	}
+	
+	result := make(map[string]dto.SwitchingReconciliationData)
+	
+	// Parse format: DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|Amount|...
+	for i, row := range records {
+		if i == 0 || len(row) < 18 {
+			continue
+		}
+		
+		// Extract RRN from column (perlu mapping sesuai sample file: QR_RECON)
+		// Ref_No ada di kolom index yang sesuai format pipe-delimited
+		rrn := strings.TrimSpace(row[17]) // Customer PAN sebagai RRN proxy - adjust based on actual format
+		
+		if rrn == "" {
+			continue
+		}
+		
+		if _, exists := result[rrn]; exists {
+			s.log.Warnf("Duplicate RRN found: %s", rrn)
+			continue
+		}
+		
+		result[rrn] = dto.SwitchingReconciliationData{
+			RRN:            rrn,
+			MerchantPAN:    strings.TrimSpace(row[3]),
+			Criteria:       strings.TrimSpace(row[11]),
+			InvoiceNumber:  strings.TrimSpace(row[17]),
+			CreatedDate:    strings.TrimSpace(row[4]),
+			CreatedTime:    strings.TrimSpace(row[5]),
+			ProcessingCode: strings.TrimSpace(row[6]),
+		}
+	}
+	
+	s.log.Infof("Loaded %d records from new recon file", len(result))
+	return result
+}
+
+// convertReconTxtToCsv converts pipe-delimited TXT recon file to CSV
+func (s *ReconciliationService) convertReconTxtToCsv(txtPath, csvPath string) error {
+	inFile, err := os.Open(txtPath)
+	if err != nil {
+		return fmt.Errorf("failed to open TXT file: %w", err)
+	}
+	defer inFile.Close()
+	
+	outFile, err := os.Create(csvPath)
+	if err != nil {
+		return fmt.Errorf("failed to create CSV file: %w", err)
+	}
+	defer outFile.Close()
+	
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
+	
+	scanner := bufio.NewScanner(inFile)
+	lineNum := 0
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineNum++
+		
+		// Skip header/footer lines
+		if strings.TrimSpace(line) == "" ||
+			strings.HasPrefix(line, "LAPORAN") ||
+			strings.HasPrefix(line, "No Report") ||
+			strings.HasPrefix(line, "---") ||
+			strings.Contains(line, "End of Pages") ||
+			!strings.HasPrefix(line, "DH|") {
+			continue
+		}
+		
+		// Split by pipe delimiter
+		fields := strings.Split(line, "|")
+		
+		// Write to CSV
+		if err := writer.Write(fields); err != nil {
+			s.log.Warnf("Failed to write line %d: %v", lineNum, err)
+		}
+	}
+	
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error scanning file: %w", err)
+	}
+	
+	s.log.Infof("Converted recon TXT to CSV: %s -> %s", txtPath, csvPath)
+	return nil
+}
+
+// convertSettlementTxtToCsv converts fixed-width settlement TXT to CSV (removes headers, merges tables)
+func (s *ReconciliationService) convertSettlementTxtToCsv(txtPath, csvPath string) error {
+	inFile, err := os.Open(txtPath)
+	if err != nil {
+		return fmt.Errorf("failed to open settlement TXT: %w", err)
+	}
+	defer inFile.Close()
+	
+	outFile, err := os.Create(csvPath)
+	if err != nil {
+		return fmt.Errorf("failed to create settlement CSV: %w", err)
+	}
+	defer outFile.Close()
+	
+	writer := csv.NewWriter(outFile)
+	defer writer.Flush()
+	
+	// Write CSV header
+	header := []string{"No", "Trx_Code", "Tanggal_Trx", "Jam_Trx", "Ref_No", "Trace_No", 
+		"Terminal_ID", "Merchant_PAN", "Acquirer", "Issuer", "Customer_PAN", "Nominal",
+		"Merchant_Category", "Merchant_Criteria", "Response_Code", "Merchant_Name_Location",
+		"Convenience_Fee", "Interchange_Fee"}
+	writer.Write(header)
+	
+	scanner := bufio.NewScanner(inFile)
+	inDisputeSection := false
+	
+	for scanner.Scan() {
+		line := scanner.Text()
+		
+		// Skip dispute section
+		if strings.Contains(line, "LAPORAN TRANSAKSI DISPUTE") {
+			inDisputeSection = true
+			continue
+		}
+		if inDisputeSection && strings.Contains(line, "End of Pages") {
+			inDisputeSection = false
+			continue
+		}
+		if inDisputeSection {
+			continue
+		}
+		
+		// Skip headers and footers
+		if strings.TrimSpace(line) == "" ||
+			strings.HasPrefix(line, "No.") ||
+			strings.HasPrefix(line, "---") ||
+			strings.Contains(line, "SUB TOTAL") ||
+			strings.Contains(line, "TOTAL") ||
+			strings.Contains(line, "LAPORAN") ||
+			strings.Contains(line, "PT ALTO") ||
+			strings.Contains(line, "Halaman") {
+			continue
+		}
+		
+		// Parse settlement data line (fixed-width format)
+		if len(line) < 190 || !unicode.IsDigit(rune(line[0])) {
+			continue
+		}
+		
+		parsed := parseSettlementDataLine(line)
+		if parsed == nil {
+			continue
+		}
+		
+		// Write parsed data as CSV row
+		row := []string{
+			"", // No (auto-increment bisa ditambahkan kalau perlu)
+			parsed["Trx_Code"],
+			parsed["Tanggal_Trx"],
+			parsed["Jam_Trx"],
+			parsed["Ref_No"],
+			parsed["Trace_No"],
+			"", // Terminal ID
+			parsed["Merchant_PAN"],
+			"", // Acquirer
+			"", // Issuer
+			"", // Customer PAN
+			"", // Nominal
+			"", // Merchant Category
+			parsed["Merchant_Criteria"],
+			"", // Response Code
+			"", // Merchant Name
+			parsed["Convenience_Fee"],
+			parsed["Interchange_Fee"],
+		}
+		
+		writer.Write(row)
+	}
+	
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error scanning settlement file: %w", err)
+	}
+	
+	s.log.Infof("Converted settlement TXT to CSV: %s -> %s", txtPath, csvPath)
+	return nil
 }
 
 // extractSettlementData mengekstrak data settlement dari file
@@ -579,18 +935,26 @@ func (s *ReconciliationService) countMatchesSettlement(results []dto.SettlementD
 	return count
 }
 
-// buildDownloadURLs membuat URL download untuk hasil
+// buildDownloadURLsMulti membuat URL download untuk hasil multi-file
+func (s *ReconciliationService) buildDownloadURLsMulti(jobID string, vendorFilesMap map[string]*dto.VendorFiles) map[string]string {
+	urls := make(map[string]string)
+	for vendor, vf := range vendorFilesMap {
+		if len(vf.ReconFiles) > 0 {
+			urls[vendor+"_recon_result"] = fmt.Sprintf("/api/download/%s/%s_recon_result.csv", jobID, vendor)
+		}
+		if len(vf.SettlementFiles) > 0 {
+			urls[vendor+"_settlement_result"] = fmt.Sprintf("/api/download/%s/%s_settlement_result.csv", jobID, vendor)
+		}
+	}
+	return urls
+}
+
+// buildDownloadURLs membuat URL download untuk hasil (OLD - kept for backward compatibility)
 func (s *ReconciliationService) buildDownloadURLs(jobID string, vendors []dto.VendorFiles) map[string]string {
 	urls := make(map[string]string)
 	for _, vf := range vendors {
-		if vf.ReconFile != nil {
-			// URL untuk hasil rekonsiliasi CSV
-			urls[vf.Vendor+"_recon_result"] = fmt.Sprintf("/api/download/%s/%s_recon_result.csv", jobID, vf.Vendor)
-		}
-		if vf.SettlementFile != nil {
-			// URL untuk hasil settlement CSV
-			urls[vf.Vendor+"_settlement_result"] = fmt.Sprintf("/api/download/%s/%s_settlement_result.csv", jobID, vf.Vendor)
-		}
+		urls[vf.Vendor+"_recon_result"] = fmt.Sprintf("/api/download/%s/%s_recon_result.csv", jobID, vf.Vendor)
+		urls[vf.Vendor+"_settlement_result"] = fmt.Sprintf("/api/download/%s/%s_settlement_result.csv", jobID, vf.Vendor)
 	}
 	return urls
 }
