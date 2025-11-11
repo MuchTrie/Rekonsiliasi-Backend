@@ -47,8 +47,8 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 			continue
 		}
 		
-		// Format file CORE baru: kolom 13 adalah RRN
-		if len(row) < 14 {
+		// Format file CORE baru: kolom 13 adalah RRN, kolom 15 adalah Amount
+		if len(row) < 16 {
 			de.log.Warnf("Row %d has insufficient columns (%d), skipping", i, len(row))
 			continue
 		}
@@ -58,9 +58,13 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 			continue
 		}
 		
+		// Parse Amount from column 15 (Amount column in CORE CSV)
+		amount := AmountConverter(row[15], de.log)
+		
 		// Extract other fields based on new CORE format
 		data := &dto.Data{
 			RRN:          rrn,
+			Amount:       amount,
 			Reff:         strings.TrimSpace(row[10]),  // Reff di kolom 10
 			ClientReff:   strings.TrimSpace(row[11]),  // Client Reff di kolom 11
 			SupplierReff: strings.TrimSpace(row[12]),  // Supplier Reff di kolom 12
@@ -132,6 +136,11 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 // ExtractSettlementData mengekstrak data settlement dari file
 func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.SwitchingSettlementData {
 	scanner := bufio.NewScanner(file)
+	// Increase buffer size for very long lines in settlement files
+	const maxCapacity = 1024 * 1024 // 1MB
+	buf := make([]byte, maxCapacity)
+	scanner.Buffer(buf, maxCapacity)
+	
 	result := make(map[string]dto.SwitchingSettlementData)
 	
 	inDisputeSection := false
@@ -160,33 +169,57 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 			strings.Contains(line, "TOTAL") ||
 			strings.Contains(line, "LAPORAN") ||
 			strings.Contains(line, "PT ALTO") ||
+			strings.Contains(line, "PT JALIN") ||
 			strings.Contains(line, "Halaman") {
 			continue
 		}
 		
-		// Parse settlement data line (fixed-width format)
-		parsed := ParseSettlementDataLine(line)
-		if parsed == nil {
-			continue
-		}
-		
-		rrn := parsed["Ref_No"]
-		if rrn == "" {
-			continue
-		}
-		
-		result[rrn] = dto.SwitchingSettlementData{
-			RRN:             rrn,
-			MerchantPAN:     parsed["Merchant_PAN"],
-			MerchantCriteria: parsed["Merchant_Criteria"],
-			TraceNo:         parsed["Trace_No"],
-			TanggalTrx:      parsed["Tanggal_Trx"],
-			JamTrx:          parsed["Jam_Trx"],
-			TrxCode:         parsed["Trx_Code"],
-			ConvenienceFee:  parsed["Convenience_Fee"],
-			InterchangeFee:  parsed["Interchange_Fee"],
+		// Parse settlement data line - each transaction is ONE long line
+		if len(line) > 50 && line[0] >= '0' && line[0] <= '9' {
+			parsed := ParseSettlementDataLineSingleLine(line)
+			if parsed == nil {
+				continue
+			}
+			
+			rrn := parsed["Ref_No"]
+			if rrn == "" {
+				continue
+			}
+			
+			// Parse Amount from Nominal field
+			amount := AmountConverter(parsed["Nominal"], de.log)
+			
+			settlementData := dto.SwitchingSettlementData{
+				SwitchingReconciliationData: dto.SwitchingReconciliationData{
+					RRN:            rrn,
+					Amount:         amount,
+					MerchantPAN:    parsed["Merchant_PAN"],
+					Criteria:       parsed["Merchant_Criteria"],
+					InvoiceNumber:  parsed["Trace_No"],
+					CreatedDate:    parsed["Tanggal_Trx"],
+					CreatedTime:    parsed["Jam_Trx"],
+					ProcessingCode: parsed["Trx_Code"],
+				},
+				TraceNo:          parsed["Trace_No"],
+				TanggalTrx:       parsed["Tanggal_Trx"],
+				JamTrx:           parsed["Jam_Trx"],
+				TrxCode:          parsed["Trx_Code"],
+				MerchantCriteria: parsed["Merchant_Criteria"],
+				ConvenienceFee:   parsed["Convenience_Fee"],
+				InterchangeFee:   parsed["Interchange_Fee"],
+			}
+			
+			// Use composite key (RRN + Amount) instead of just RRN
+			key := settlementData.Key()
+			if _, exists := result[key]; exists {
+				de.log.Warnf("Duplicate settlement key found: %s", key)
+				continue
+			}
+			
+			result[key] = settlementData
 		}
 	}
 	
+	de.log.Infof("Loaded %d settlement records", len(result))
 	return result
 }

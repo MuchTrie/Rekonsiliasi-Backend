@@ -56,21 +56,28 @@ func CompareReconRRNs(core []*dto.Data, switching map[string]dto.SwitchingReconc
 	return results
 }
 
-// CompareSettlementRRNs membandingkan settlement RRNs
+// CompareSettlementRRNs membandingkan settlement menggunakan composite key (RRN + Amount)
 func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingSettlementData) []dto.SettlementSwitchingResult {
 	var results []dto.SettlementSwitchingResult
-	coreMap := make(map[string]*dto.Data)
+	coreKeys := make(map[string]bool)
 	
+	// Build map of core keys
 	for _, data := range core {
-		coreMap[data.RRN] = data
+		key := data.Key()
+		if coreKeys[key] {
+			// Duplicate key in core data - log but continue
+			continue
+		}
+		coreKeys[key] = true
 	}
 	
-	for rrn, switchData := range switching {
-		if coreData, exists := coreMap[rrn]; exists {
+	// Check switching data against core
+	for key, switchData := range switching {
+		if coreKeys[key] {
+			// MATCH - RRN + Amount exists in both
 			results = append(results, dto.SettlementSwitchingResult{
-				RRN:              rrn,
-				Reff:             coreData.Reff,
-				Status:           coreData.Status,
+				RRN:              switchData.RRN,
+				Amount:           switchData.Amount,
 				MatchStatus:      "MATCH",
 				MerchantPAN:      switchData.MerchantPAN,
 				MerchantCriteria: switchData.MerchantCriteria,
@@ -81,10 +88,12 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 				InterchangeFee:   switchData.InterchangeFee,
 				ConvenienceFee:   switchData.ConvenienceFee,
 			})
-			delete(coreMap, rrn)
+			delete(coreKeys, key)
 		} else {
+			// ONLY_IN_SWITCHING
 			results = append(results, dto.SettlementSwitchingResult{
-				RRN:              rrn,
+				RRN:              switchData.RRN,
+				Amount:           switchData.Amount,
 				MatchStatus:      "ONLY_IN_SWITCHING",
 				MerchantPAN:      switchData.MerchantPAN,
 				MerchantCriteria: switchData.MerchantCriteria,
@@ -98,13 +107,18 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 		}
 	}
 	
-	for rrn, coreData := range coreMap {
-		results = append(results, dto.SettlementSwitchingResult{
-			RRN:         rrn,
-			Reff:        coreData.Reff,
-			Status:      coreData.Status,
-			MatchStatus: "ONLY_IN_CORE",
-		})
+	// Remaining core keys are ONLY_IN_CORE
+	for _, coreData := range core {
+		key := coreData.Key()
+		if coreKeys[key] {
+			results = append(results, dto.SettlementSwitchingResult{
+				RRN:         coreData.RRN,
+				Amount:      coreData.Amount,
+				Reff:        coreData.Reff,
+				Status:      coreData.Status,
+				MatchStatus: "ONLY_IN_CORE",
+			})
+		}
 	}
 	
 	return results

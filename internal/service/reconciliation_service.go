@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -470,11 +471,21 @@ func (s *ReconciliationService) parseReconResults(records [][]string) ([]map[str
 			continue
 		}
 		
+		// Add source field based on match_status
+		source := "BOTH"
+		matchStatus := row[3]
+		if matchStatus == "ONLY_IN_CORE" {
+			source = "CORE"
+		} else if matchStatus == "ONLY_IN_SWITCHING" {
+			source = "SWITCHING"
+		}
+		
 		results = append(results, map[string]interface{}{
 			"rrn":               row[0],
 			"reff":              row[1],
 			"status":            row[2],
 			"match_status":      row[3],
+			"source":            source,
 			"merchant_pan":      row[4],
 			"merchant_criteria": row[5],
 			"invoice_number":    row[6],
@@ -502,14 +513,36 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) ([]ma
 			continue
 		}
 		
+		// Parse amount (column index 1)
+		var amount float64
+		if row[1] != "" {
+			parsedAmount, err := strconv.ParseFloat(row[1], 64)
+			if err == nil {
+				amount = parsedAmount
+			}
+		}
+		
+		// Add source field based on match_status
+		source := "BOTH"
+		matchStatus := row[4]
+		if matchStatus == "MATCH" {
+			source = "BOTH"
+		} else if matchStatus == "ONLY_IN_CORE" {
+			source = "CORE"
+		} else if matchStatus == "ONLY_IN_SWITCHING" {
+			source = "SWITCHING"
+		}
+		
 		results = append(results, map[string]interface{}{
 			"rrn":               row[0],
-			"reff":              row[1],
-			"status":            row[2],
-			"match_status":      row[3],
-			"merchant_pan":      row[4],
-			"interchange_fee":   row[10],
-			"convenience_fee":   row[11],
+			"amount":            amount,
+			"reff":              row[2],
+			"status":            row[3],
+			"match_status":      row[4],
+			"source":            source,
+			"merchant_pan":      row[5],
+			"interchange_fee":   row[11],
+			"convenience_fee":   row[12],
 		})
 	}
 	
