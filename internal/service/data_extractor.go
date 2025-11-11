@@ -10,30 +10,43 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// DataExtractor handles data extraction from various file formats
+// ============================================================================
+// DATA EXTRACTOR - STRUCT & CONSTRUCTOR
+// ============================================================================
+
+// DataExtractor menangani ekstraksi data dari berbagai format file (CSV, TXT)
 type DataExtractor struct {
 	log *logrus.Logger
 }
 
-// NewDataExtractor creates a new data extractor
+// NewDataExtractor membuat instance baru dari DataExtractor
 func NewDataExtractor(log *logrus.Logger) *DataExtractor {
 	return &DataExtractor{
 		log: log,
 	}
 }
 
-// ExtractSingleCoreData mengekstrak data dari satu CORE file dengan format baru
+// ============================================================================
+// FUNGSI EKSTRAKSI CORE DATA
+// ============================================================================
+
+// ExtractSingleCoreData mengekstrak data dari file CORE CSV
+// Format CORE: No, Status, Settle, Created Date, ..., RRN (kolom 13), Supplier Name (kolom 14), Amount (kolom 15), ...
+// Mengembalikan slice dari dto.Data dengan composite key (RRN + Amount)
 func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error) {
+	// Buka file CSV
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 	
+	// Setup CSV reader
 	reader := csv.NewReader(file)
 	reader.Comma = ','
-	reader.FieldsPerRecord = -1
+	reader.FieldsPerRecord = -1 // Allow variable number of fields
 	
+	// Baca semua records
 	records, err := reader.ReadAll()
 	if err != nil {
 		return nil, err
@@ -41,27 +54,28 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 	
 	var result []*dto.Data
 	
-	// Skip header row (index 0)
+	// Loop records (skip header di index 0)
 	for i, row := range records {
 		if i == 0 {
-			continue
+			continue // Skip header row
 		}
 		
-		// Format file CORE baru: kolom 13 adalah RRN, kolom 15 adalah Amount
+		// Validasi jumlah kolom (minimal 16 kolom)
 		if len(row) < 16 {
-			de.log.Warnf("Row %d has insufficient columns (%d), skipping", i, len(row))
+			de.log.Warnf("Baris %d memiliki kolom tidak lengkap (%d kolom), dilewati", i, len(row))
 			continue
 		}
 		
-		rrn := strings.TrimSpace(row[13]) // RRN di kolom index 13
+		// Extract RRN dari kolom 13 (index 13)
+		rrn := strings.TrimSpace(row[13])
 		if rrn == "" {
-			continue
+			continue // Skip jika RRN kosong
 		}
 		
-		// Parse Amount from column 15 (Amount column in CORE CSV)
+		// Parse Amount dari kolom 15 (index 15)
 		amount := AmountConverter(row[15], de.log)
 		
-		// Extract other fields based on new CORE format
+		// Buat struct Data dengan field yang diperlukan
 		data := &dto.Data{
 			RRN:          rrn,
 			Amount:       amount,
@@ -75,6 +89,7 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 			PaidTime:     strings.TrimSpace(row[6]),   // Paid Time di kolom 6
 		}
 		
+		// Extract Vendor Name (Supplier Name) jika ada
 		if len(row) > 14 {
 			data.Vendor = strings.TrimSpace(row[14]) // Supplier Name di kolom 14
 		}
@@ -82,42 +97,53 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 		result = append(result, data)
 	}
 	
+	de.log.Infof("Berhasil ekstrak %d records dari CORE file", len(result))
 	return result, nil
 }
 
-// ExtractReconciliationDataNew mengekstrak data rekonsiliasi dari format baru (pipe-delimited TXT converted to CSV)
+// ============================================================================
+// FUNGSI EKSTRAKSI RECONCILIATION DATA
+// ============================================================================
+
+// ExtractReconciliationDataNew mengekstrak data rekonsiliasi dari file TXT yang sudah dikonversi ke CSV
+// Format: Pipe-delimited TXT yang sudah dikonversi menjadi CSV dengan format tertentu
+// Mengembalikan map dengan RRN sebagai key
 func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]dto.SwitchingReconciliationData {
+	// Setup CSV reader
 	reader := csv.NewReader(file)
 	reader.Comma = ','
-	reader.FieldsPerRecord = -1
+	reader.FieldsPerRecord = -1 // Allow variable number of fields
 	
+	// Baca semua records
 	records, err := reader.ReadAll()
 	if err != nil || len(records) < 2 {
-		de.log.Errorf("Failed to read reconciliation file: %v", err)
+		de.log.Errorf("Gagal membaca file rekonsiliasi: %v", err)
 		return make(map[string]dto.SwitchingReconciliationData)
 	}
 	
 	result := make(map[string]dto.SwitchingReconciliationData)
 	
-	// Parse format: DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|Amount|...
+	// Loop records dan extract data
+	// Format: DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|Amount|...
 	for i, row := range records {
 		if i == 0 || len(row) < 18 {
-			continue
+			continue // Skip header atau row dengan kolom tidak lengkap
 		}
 		
-		// Extract RRN from column (perlu mapping sesuai sample file: QR_RECON)
-		// Ref_No ada di kolom index yang sesuai format pipe-delimited
-		rrn := strings.TrimSpace(row[17]) // Customer PAN sebagai RRN proxy - adjust based on actual format
+		// Extract RRN dari kolom yang sesuai (adjust based on format)
+		rrn := strings.TrimSpace(row[17]) // Customer PAN digunakan sebagai RRN proxy
 		
 		if rrn == "" {
-			continue
+			continue // Skip jika RRN kosong
 		}
 		
+		// Check duplikasi
 		if _, exists := result[rrn]; exists {
-			de.log.Warnf("Duplicate RRN found: %s", rrn)
+			de.log.Warnf("RRN duplikat ditemukan: %s", rrn)
 			continue
 		}
 		
+		// Buat struct SwitchingReconciliationData
 		result[rrn] = dto.SwitchingReconciliationData{
 			RRN:            rrn,
 			MerchantPAN:    strings.TrimSpace(row[3]),
@@ -129,15 +155,22 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 		}
 	}
 	
-	de.log.Infof("Loaded %d records from new recon file", len(result))
+	de.log.Infof("Berhasil ekstrak %d records dari file rekonsiliasi", len(result))
 	return result
 }
 
-// ExtractSettlementData mengekstrak data settlement dari file
+// ============================================================================
+// FUNGSI EKSTRAKSI SETTLEMENT DATA
+// ============================================================================
+
+// ExtractSettlementData mengekstrak data settlement dari file TXT
+// Format Settlement: 1 transaksi = 1 baris panjang (500+ karakter) dengan semua field
+// Menggunakan composite key (RRN + Amount) untuk matching
+// Mengembalikan map dengan key = "RRN|Amount"
 func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.SwitchingSettlementData {
+	// Setup scanner dengan buffer besar untuk baris panjang
 	scanner := bufio.NewScanner(file)
-	// Increase buffer size for very long lines in settlement files
-	const maxCapacity = 1024 * 1024 // 1MB
+	const maxCapacity = 1024 * 1024 // 1MB buffer
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 	
@@ -145,10 +178,11 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 	
 	inDisputeSection := false
 	
+	// Loop setiap baris di file
 	for scanner.Scan() {
 		line := scanner.Text()
 		
-		// Skip dispute section
+		// Skip bagian dispute (tidak perlu diproses)
 		if strings.Contains(line, "LAPORAN TRANSAKSI DISPUTE") {
 			inDisputeSection = true
 			continue
@@ -161,7 +195,7 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 			continue
 		}
 		
-		// Skip empty lines and headers
+		// Skip baris kosong dan header/footer
 		if strings.TrimSpace(line) == "" ||
 			strings.HasPrefix(line, "No.") ||
 			strings.HasPrefix(line, "---") ||
@@ -174,21 +208,24 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 			continue
 		}
 		
-		// Parse settlement data line - each transaction is ONE long line
+		// Parse baris settlement (1 transaksi = 1 baris panjang)
 		if len(line) > 50 && line[0] >= '0' && line[0] <= '9' {
+			// Gunakan parser single-line untuk extract semua field
 			parsed := ParseSettlementDataLineSingleLine(line)
 			if parsed == nil {
 				continue
 			}
 			
+			// Extract RRN dan Amount
 			rrn := parsed["Ref_No"]
 			if rrn == "" {
 				continue
 			}
 			
-			// Parse Amount from Nominal field
+			// Convert Amount dari string ke float64
 			amount := AmountConverter(parsed["Nominal"], de.log)
 			
+			// Buat struct SettlementData
 			settlementData := dto.SwitchingSettlementData{
 				SwitchingReconciliationData: dto.SwitchingReconciliationData{
 					RRN:            rrn,
@@ -209,10 +246,10 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 				InterchangeFee:   parsed["Interchange_Fee"],
 			}
 			
-			// Use composite key (RRN + Amount) instead of just RRN
-			key := settlementData.Key()
+			// Gunakan composite key (RRN + Amount) untuk matching yang akurat
+			key := settlementData.Key() // Format: "RRN|Amount" (contoh: "1iefp2w46282|20000.00")
 			if _, exists := result[key]; exists {
-				de.log.Warnf("Duplicate settlement key found: %s", key)
+				de.log.Warnf("Key settlement duplikat ditemukan: %s", key)
 				continue
 			}
 			
@@ -220,6 +257,6 @@ func (de *DataExtractor) ExtractSettlementData(file *os.File) map[string]dto.Swi
 		}
 	}
 	
-	de.log.Infof("Loaded %d settlement records", len(result))
+	de.log.Infof("Berhasil ekstrak %d records settlement", len(result))
 	return result
 }

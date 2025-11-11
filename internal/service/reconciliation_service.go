@@ -15,46 +15,73 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// ReconciliationService handles reconciliation business logic
+// ============================================================================
+// RECONCILIATION SERVICE - STRUCT & CONSTRUCTOR
+// ============================================================================
+
+// ReconciliationService adalah service utama yang mengatur seluruh proses rekonsiliasi
+// Bertanggung jawab untuk:
+// - Mengelola upload file
+// - Koordinasi proses ekstraksi data
+// - Menjalankan algoritma perbandingan
+// - Menyimpan hasil ke CSV
+// - Generate job ID dan download URLs
 type ReconciliationService struct {
-	log                 *logrus.Logger
-	uploadDir           string
-	resultsDir          string
-	jobCounter          int // Counter for 4-digit ID
-	mu                  sync.Mutex
-	fileConverter       *FileConverter
-	dataExtractor       *DataExtractor
-	settlementConverter *SettlementConverter
+	log                 *logrus.Logger           // Logger untuk tracking
+	uploadDir           string                   // Direktori untuk file upload sementara
+	resultsDir          string                   // Direktori untuk hasil rekonsiliasi
+	jobCounter          int                      // Counter untuk job ID (4 digit)
+	mu                  sync.Mutex               // Mutex untuk thread safety
+	fileConverter       *FileConverter           // Converter TXT → CSV
+	dataExtractor       *DataExtractor           // Extractor data dari file
+	settlementConverter *SettlementConverter     // Converter settlement khusus
 }
 
-// NewReconciliationService creates a new reconciliation service
+// NewReconciliationService membuat instance baru dari ReconciliationService
+// Parameter:
+//   - log: Logger untuk tracking proses
+//   - uploadDir: Path direktori untuk upload temporary
+//   - resultsDir: Path direktori untuk menyimpan hasil
 func NewReconciliationService(log *logrus.Logger, uploadDir, resultsDir string) *ReconciliationService {
 	return &ReconciliationService{
 		log:                 log,
 		uploadDir:           uploadDir,
 		resultsDir:          resultsDir,
-		jobCounter:          0, // Will be loaded from existing folders
+		jobCounter:          0, // Counter akan di-load dari folder yang sudah ada
 		fileConverter:       NewFileConverter(log),
 		dataExtractor:       NewDataExtractor(log),
 		settlementConverter: NewSettlementConverter(log, uploadDir, resultsDir),
 	}
 }
 
-// ProcessReconciliation memproses rekonsiliasi dari file yang diupload
+// ============================================================================
+// FUNGSI UTAMA - PROCESS RECONCILIATION
+// ============================================================================
+
+// ProcessReconciliation adalah fungsi utama yang memproses rekonsiliasi dari file upload
+// Flow:
+//   1. Generate job ID (XXXX-DD-MM-YYYY)
+//   2. Buat folder job
+//   3. Auto-detect vendor dari nama file CORE
+//   4. Save file upload
+//   5. Extract data CORE & Switching
+//   6. Bandingkan data (comparison algorithm)
+//   7. Write hasil ke CSV
+//   8. Return result dengan download URLs
 func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationRequest) (*dto.ReconciliationResult, error) {
-	// Generate job ID dengan format: XXXX-DD-MM-YYYY
+	// Step 1: Generate job ID dengan format XXXX-DD-MM-YYYY
 	now := time.Now()
 	jobID := s.generateJobID(now)
 	jobDir := filepath.Join(s.resultsDir, jobID)
 	
-	// Buat direktori untuk job ini
+	// Step 2: Buat direktori untuk job ini
 	if err := os.MkdirAll(jobDir, os.ModePerm); err != nil {
-		return nil, fmt.Errorf("failed to create job directory: %w", err)
+		return nil, fmt.Errorf("gagal membuat direktori job: %w", err)
 	}
 	
-	s.log.Infof("Processing reconciliation job %s", jobID)
+	s.log.Infof("Memproses job rekonsiliasi %s", jobID)
 	
-	// Get vendor files map (auto-detect vendor from CORE filenames)
+	// Step 3: Dapatkan map vendor files (auto-detect dari nama file CORE)
 	vendorFilesMap := req.GetVendorFilesMap()
 	
 	if len(vendorFilesMap) == 0 {

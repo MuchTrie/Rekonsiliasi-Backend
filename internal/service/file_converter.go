@@ -12,29 +12,42 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// FileConverter handles file conversion operations
+// ============================================================================
+// FILE CONVERTER - STRUCT & CONSTRUCTOR
+// ============================================================================
+
+// FileConverter menangani operasi konversi file dari berbagai format
+// Mendukung konversi: TXT → CSV untuk file rekonsiliasi dan settlement
 type FileConverter struct {
 	log *logrus.Logger
 }
 
-// NewFileConverter creates a new file converter
+// NewFileConverter membuat instance baru dari FileConverter
 func NewFileConverter(log *logrus.Logger) *FileConverter {
 	return &FileConverter{
 		log: log,
 	}
 }
 
-// ConvertReconTxtToCsv converts pipe-delimited TXT recon file to CSV
+// ============================================================================
+// FUNGSI KONVERSI RECONCILIATION
+// ============================================================================
+
+// ConvertReconTxtToCsv mengkonversi file rekonsiliasi TXT (pipe-delimited) ke CSV
+// Format input: DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|...
+// Format output: CSV dengan delimiter koma
 func (fc *FileConverter) ConvertReconTxtToCsv(txtPath, csvPath string) error {
+	// Buka file TXT input
 	inFile, err := os.Open(txtPath)
 	if err != nil {
-		return fmt.Errorf("failed to open TXT file: %w", err)
+		return fmt.Errorf("gagal membuka file TXT: %w", err)
 	}
 	defer inFile.Close()
 	
+	// Buat file CSV output
 	outFile, err := os.Create(csvPath)
 	if err != nil {
-		return fmt.Errorf("failed to create CSV file: %w", err)
+		return fmt.Errorf("gagal membuat file CSV: %w", err)
 	}
 	defer outFile.Close()
 	
@@ -44,11 +57,12 @@ func (fc *FileConverter) ConvertReconTxtToCsv(txtPath, csvPath string) error {
 	scanner := bufio.NewScanner(inFile)
 	lineNum := 0
 	
+	// Loop setiap baris di file TXT
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineNum++
 		
-		// Skip header/footer lines
+		// Skip header, footer, dan baris kosong
 		if strings.TrimSpace(line) == "" ||
 			strings.HasPrefix(line, "LAPORAN") ||
 			strings.HasPrefix(line, "No Report") ||
@@ -58,59 +72,68 @@ func (fc *FileConverter) ConvertReconTxtToCsv(txtPath, csvPath string) error {
 			continue
 		}
 		
-		// Split by pipe delimiter
+		// Split berdasarkan delimiter pipe (|)
 		fields := strings.Split(line, "|")
 		
-		// Write to CSV
+		// Tulis ke file CSV
 		if err := writer.Write(fields); err != nil {
-			fc.log.Warnf("Failed to write line %d: %v", lineNum, err)
+			fc.log.Warnf("Gagal menulis baris %d: %v", lineNum, err)
 		}
 	}
 	
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error scanning file: %w", err)
+		return fmt.Errorf("error saat scanning file: %w", err)
 	}
 	
-	fc.log.Infof("Converted recon TXT to CSV: %s -> %s", txtPath, csvPath)
+	fc.log.Infof("Konversi rekonsiliasi TXT → CSV berhasil: %s → %s", txtPath, csvPath)
 	return nil
 }
 
-// ConvertSettlementTxtToCsv converts fixed-width settlement TXT to CSV
+// ============================================================================
+// FUNGSI KONVERSI SETTLEMENT
+// ============================================================================
+
+// ConvertSettlementTxtToCsv mengkonversi file settlement TXT ke CSV
+// Format settlement: 1 transaksi = 1 baris panjang (500+ karakter)
+// Parser menggunakan regex untuk extract fees, lalu split whitespace untuk field lainnya
 func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) error {
+	// Buka file TXT input
 	inFile, err := os.Open(txtPath)
 	if err != nil {
-		return fmt.Errorf("failed to open settlement TXT: %w", err)
+		return fmt.Errorf("gagal membuka file settlement TXT: %w", err)
 	}
 	defer inFile.Close()
 	
+	// Buat file CSV output
 	outFile, err := os.Create(csvPath)
 	if err != nil {
-		return fmt.Errorf("failed to create settlement CSV: %w", err)
+		return fmt.Errorf("gagal membuat file settlement CSV: %w", err)
 	}
 	defer outFile.Close()
 	
 	writer := csv.NewWriter(outFile)
 	defer writer.Flush()
 	
-	// Write CSV header
+	// Tulis header CSV
 	header := []string{"No", "Trx_Code", "Tanggal_Trx", "Jam_Trx", "Ref_No", "Trace_No", 
 		"Terminal_ID", "Merchant_PAN", "Acquirer", "Issuer", "Customer_PAN", "Nominal",
 		"Merchant_Category", "Merchant_Criteria", "Response_Code", "Merchant_Name_Location",
 		"Convenience_Fee", "Interchange_Fee"}
 	writer.Write(header)
 	
+	// Setup scanner dengan buffer besar untuk baris panjang
 	scanner := bufio.NewScanner(inFile)
-	// Increase buffer size for very long lines
-	const maxCapacity = 1024 * 1024 // 1MB
+	const maxCapacity = 1024 * 1024 // 1MB buffer
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 	
 	inDisputeSection := false
 	
+	// Loop setiap baris di file
 	for scanner.Scan() {
 		line := scanner.Text()
 		
-		// Skip dispute section
+		// Skip bagian dispute (tidak perlu diproses)
 		if strings.Contains(line, "LAPORAN TRANSAKSI DISPUTE") {
 			inDisputeSection = true
 			continue
@@ -123,7 +146,7 @@ func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) erro
 			continue
 		}
 		
-		// Skip headers and footers
+		// Skip header, footer, dan baris kosong
 		if strings.TrimSpace(line) == "" ||
 			strings.HasPrefix(line, "No.") ||
 			strings.HasPrefix(line, "---") ||
@@ -136,11 +159,12 @@ func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) erro
 			continue
 		}
 		
-		// Parse settlement data line - each transaction is ONE long line
+		// Parse baris settlement (1 transaksi = 1 baris panjang)
 		if len(line) > 50 && unicode.IsDigit(rune(line[0])) {
+			// Parse menggunakan single-line parser
 			parsed := ParseSettlementDataLineSingleLine(line)
 			if parsed != nil {
-				// Write parsed data as CSV row
+				// Tulis hasil parsing ke CSV
 				row := []string{
 					parsed["No"],
 					parsed["Trx_Code"],
@@ -167,42 +191,51 @@ func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) erro
 	}
 	
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error scanning settlement file: %w", err)
+		return fmt.Errorf("error saat scanning file settlement: %w", err)
 	}
 	
-	fc.log.Infof("Converted settlement TXT to CSV: %s -> %s", txtPath, csvPath)
+	fc.log.Infof("Konversi settlement TXT → CSV berhasil: %s → %s", txtPath, csvPath)
 	return nil
 }
 
-// ParseSettlementDataLineSingleLine parses settlement single long line
-// Format: 000001 261000   28/10/25    23:29:55 000116137305 928001   INA-D0417303417  9360083135739049578 93600831    93600014    9360001410098409682       200,000.00 5999              UKE               00            BUANATELESINO SHOP JKT   JAKARTA SELATID          0.00 C         -770.00
+// ============================================================================
+// FUNGSI PARSER SETTLEMENT - SINGLE LINE FORMAT
+// ============================================================================
+
+// ParseSettlementDataLineSingleLine melakukan parsing baris settlement yang panjang (single line)
+// Format: 000001 261000 28/10/25 23:29:55 000116137305 928001 INA-D0417303417 ... -770.00
+// Algoritma:
+//   1. Extract Interchange Fee dari akhir (format: -770.00)
+//   2. Extract Convenience Fee sebelumnya (format: 0.00 C)
+//   3. Extract Response Code + Merchant Name (format: 00 MERCHANT NAME)
+//   4. Split sisanya dengan whitespace untuk dapat 14 field
 func ParseSettlementDataLineSingleLine(line string) map[string]string {
 	line = strings.TrimRight(line, " \t")
 	
-	// Extract Interchange Fee (last column, format: -123.00 or 123.00)
+	// Step 1: Extract Interchange Fee (kolom terakhir, format: -123.00 atau 123.00)
 	interchangeRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}\s*$`)
 	interchangeMatches := interchangeRegex.FindStringIndex(line)
 	if interchangeMatches == nil {
-		return nil
+		return nil // Tidak valid jika tidak ada Interchange Fee
 	}
 	interchangeFee := strings.TrimSpace(line[interchangeMatches[0]:interchangeMatches[1]])
 	remaining := line[:interchangeMatches[0]]
 	
 	remaining = strings.TrimRight(remaining, " \t")
 	
-	// Extract Convenience Fee (second to last column, format: 0.00 C or 0.00 D)
+	// Step 2: Extract Convenience Fee (kolom kedua dari akhir, format: 0.00 C atau 0.00 D)
 	convenienceRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}\s+[DC]\s*$`)
 	convenienceMatches := convenienceRegex.FindStringIndex(remaining)
 	if convenienceMatches == nil {
-		return nil
+		return nil // Tidak valid jika tidak ada Convenience Fee
 	}
 	convenienceFee := strings.TrimSpace(remaining[convenienceMatches[0]:convenienceMatches[1]])
 	remaining = remaining[:convenienceMatches[0]]
 	
 	remaining = strings.TrimRight(remaining, " \t")
 	
-	// Extract merchant name and location (everything before response code)
-	// Response code is typically 2 digits followed by multiple spaces
+	// Step 3: Extract Response Code (2 digit) + Merchant Name (sisanya)
+	// Format: "00            BUANATELESINO SHOP JKT   JAKARTA SELATID"
 	merchantRegex := regexp.MustCompile(`\s+(\d{2})\s+(.+)$`)
 	merchantMatches := merchantRegex.FindStringSubmatch(remaining)
 	
@@ -214,52 +247,61 @@ func ParseSettlementDataLineSingleLine(line string) map[string]string {
 		remaining = remaining[:len(remaining)-len(merchantMatches[0])]
 	}
 	
-	// Split remaining fields by whitespace
+	// Step 4: Split field sisanya berdasarkan whitespace
 	parts := strings.Fields(remaining)
 	
-	// Expected format after removing fees, merchant name, and response code:
+	// Validasi: Harus ada minimal 14 field
+	// Format: No Trx_Code Tanggal_Trx Jam_Trx Ref_No Trace_No Terminal_ID Merchant_PAN Acquirer Issuer Customer_PAN Nominal Merchant_Category Merchant_Criteria
 	// 0:No 1:Trx_Code 2:Tanggal_Trx 3:Jam_Trx 4:Ref_No 5:Trace_No 
 	// 6:Terminal_ID 7:Merchant_PAN 8:Acquirer 9:Issuer 10:Customer_PAN 11:Nominal 12:Merchant_Category 13:Merchant_Criteria
 	
 	if len(parts) < 14 {
-		return nil
+		return nil // Field tidak lengkap
 	}
 	
+	// Return map dengan key = nama field, value = nilai field
 	return map[string]string{
-		"No":                     parts[0],
-		"Trx_Code":               parts[1],
-		"Tanggal_Trx":            parts[2],
-		"Jam_Trx":                parts[3],
-		"Ref_No":                 parts[4],  // RRN
-		"Trace_No":               parts[5],
-		"Terminal_ID":            parts[6],
-		"Merchant_PAN":           parts[7],
-		"Acquirer":               parts[8],
-		"Issuer":                 parts[9],
-		"Customer_PAN":           parts[10],
-		"Nominal":                parts[11], // Amount
-		"Merchant_Category":      parts[12],
-		"Merchant_Criteria":      parts[13],
-		"Response_Code":          responseCode,
-		"Merchant_Name_Location": merchantName,
-		"Convenience_Fee":        convenienceFee,
-		"Interchange_Fee":        interchangeFee,
+		"No":                     parts[0],   // Nomor urut transaksi
+		"Trx_Code":               parts[1],   // Kode transaksi (261000 atau 266000)
+		"Tanggal_Trx":            parts[2],   // Tanggal transaksi (DD/MM/YY)
+		"Jam_Trx":                parts[3],   // Jam transaksi (HH:MM:SS)
+		"Ref_No":                 parts[4],   // RRN (Reference Number)
+		"Trace_No":               parts[5],   // Trace Number
+		"Terminal_ID":            parts[6],   // Terminal ID
+		"Merchant_PAN":           parts[7],   // Merchant PAN
+		"Acquirer":               parts[8],   // Acquirer ID
+		"Issuer":                 parts[9],   // Issuer ID
+		"Customer_PAN":           parts[10],  // Customer PAN
+		"Nominal":                parts[11],  // Amount transaksi
+		"Merchant_Category":      parts[12],  // Kategori merchant (5999, 7372, dll)
+		"Merchant_Criteria":      parts[13],  // Kriteria merchant (UKE, UME, dll)
+		"Response_Code":          responseCode,    // Response code (00 = success)
+		"Merchant_Name_Location": merchantName,    // Nama dan lokasi merchant
+		"Convenience_Fee":        convenienceFee,  // Biaya convenience
+		"Interchange_Fee":        interchangeFee,  // Biaya interchange
 	}
 }
 
-// ParseSettlementMultiLine parses settlement multi-line record (3 lines per transaction) - DEPRECATED
-// Kept for backward compatibility, but current file format uses single long lines
+// ============================================================================
+// FUNGSI PARSER SETTLEMENT - MULTI LINE FORMAT (DEPRECATED)
+// ============================================================================
+
+// ParseSettlementMultiLine melakukan parsing settlement format multi-line (3 baris per transaksi)
+// DEPRECATED: Format lama yang tidak lagi digunakan, disimpan untuk backward compatibility
+// Format file settlement saat ini menggunakan single long line per transaksi
+//
+// Contoh format 3-line:
 // Line 1: 000006 266000   28/10/25    23:29:59 1idfhkd57013 903937   INA-A7417383456  9360083133908589201
 // Line 2: 93600831    93600915    9360091534900075000        99,000.00 5999              UKE
 // Line 3: 00            MATRIX SHOP              TANGERANG    ID          0.00 C         -381.15
 func ParseSettlementMultiLine(line1, line2, line3 string) map[string]string {
-	// Parse Line 1
+	// Parse Line 1: No, Trx_Code, Tanggal, Jam, RRN, Trace, Terminal, Merchant PAN
 	parts1 := strings.Fields(line1)
 	if len(parts1) < 8 {
 		return nil
 	}
 	
-	// Parse Line 2 to get Nominal, Merchant Category, Merchant Criteria
+	// Parse Line 2: Acquirer, Issuer, Customer PAN, Nominal, Category, Criteria
 	parts2 := strings.Fields(line2)
 	if len(parts2) < 6 {
 		return nil
