@@ -128,8 +128,8 @@ Aplikasi akan otomatis:
 
 | Username | Password | Role | Email |
 |----------|----------|------|-------|
-| admin | admin123 | admin | admin@example.com |
-| operasional | ops123 | operasional | ops@example.com |
+| admin@switching.com | admin123 | admin | admin@example.com |
+| operasional@switching.com | operasional123 | operasional | ops@example.com |
 
 
 
