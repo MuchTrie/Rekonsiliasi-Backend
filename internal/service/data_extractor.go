@@ -124,14 +124,19 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 	result := make(map[string]dto.SwitchingReconciliationData)
 	
 	// Loop records dan extract data
-	// Format: DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|Amount|...
+	// Format actual file recon JALIN/ALTO (pipe-delimited):
+	// DH|Terminal|Trace|MerchantPAN|Date|Time|ProcessCode|Amount|C/D|Fee|Category|Criteria|Acquirer|Issuer|SettlementID|ResponseCode|CustomerPAN|RefData|Stan|MTI
+	// Index: 0   1        2     3           4    5    6           7      8   9   10       11       12       13     14           15           16         17      18   19
+	// CATATAN: File hasil konversi tidak punya header row, langsung data
+	// IMPORTANT: Trace Number (kolom 2) adalah RRN yang digunakan untuk matching dengan CORE!
 	for i, row := range records {
-		if i == 0 || len(row) < 18 {
-			continue // Skip header atau row dengan kolom tidak lengkap
+		if len(row) < 17 {
+			de.log.Warnf("Baris %d memiliki kolom tidak lengkap (%d kolom), dilewati", i+1, len(row))
+			continue // Skip row dengan kolom tidak lengkap
 		}
 		
-		// Extract RRN dari kolom yang sesuai (adjust based on format)
-		rrn := strings.TrimSpace(row[17]) // Customer PAN digunakan sebagai RRN proxy
+		// Extract Trace Number dari kolom 2 (digunakan sebagai RRN untuk matching dengan CORE)
+		rrn := strings.TrimSpace(row[2])
 		
 		if rrn == "" {
 			continue // Skip jika RRN kosong
@@ -143,12 +148,18 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 			continue
 		}
 		
+		// Extract dan convert Amount dari kolom 7
+		// Format: 000002000000 (12 digit, 2 digit terakhir adalah desimal)
+		// Contoh: 000002000000 = 20000.00
+		amount := AmountConverter(row[7], de.log)
+		
 		// Buat struct SwitchingReconciliationData
 		result[rrn] = dto.SwitchingReconciliationData{
 			RRN:            rrn,
+			Amount:         amount,
 			MerchantPAN:    strings.TrimSpace(row[3]),
 			Criteria:       strings.TrimSpace(row[11]),
-			InvoiceNumber:  strings.TrimSpace(row[17]),
+			InvoiceNumber:  strings.TrimSpace(row[2]),  // Trace Number
 			CreatedDate:    strings.TrimSpace(row[4]),
 			CreatedTime:    strings.TrimSpace(row[5]),
 			ProcessingCode: strings.TrimSpace(row[6]),
@@ -163,7 +174,77 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 // FUNGSI EKSTRAKSI SETTLEMENT DATA
 // ============================================================================
 
-// ExtractSettlementData mengekstrak data settlement dari file TXT
+// ExtractSettlementDataFromCSV mengekstrak data settlement dari file CSV (hasil konversi)
+// Format CSV: No,Trx_Code,Tanggal_Trx,Jam_Trx,Ref_No,Trace_No,Terminal_ID,Merchant_PAN,...
+// Menggunakan composite key (RRN + Amount) untuk matching
+// Mengembalikan map dengan key = "RRN|Amount"
+func (de *DataExtractor) ExtractSettlementDataFromCSV(file *os.File) map[string]dto.SwitchingSettlementData {
+	// Setup CSV reader
+	reader := csv.NewReader(file)
+	reader.Comma = ','
+	reader.FieldsPerRecord = -1 // Allow variable number of fields
+	
+	// Baca semua records
+	records, err := reader.ReadAll()
+	if err != nil || len(records) < 2 {
+		de.log.Errorf("Gagal membaca file settlement CSV: %v", err)
+		return make(map[string]dto.SwitchingSettlementData)
+	}
+	
+	result := make(map[string]dto.SwitchingSettlementData)
+	
+	// Loop records (skip header di index 0)
+	// Format: No,Trx_Code,Tanggal_Trx,Jam_Trx,Ref_No,Trace_No,Terminal_ID,Merchant_PAN,Acquirer,Issuer,Customer_PAN,Nominal,Merchant_Category,Merchant_Criteria,Response_Code,Merchant_Name_Location,Convenience_Fee,Interchange_Fee
+	for i, row := range records {
+		if i == 0 || len(row) < 18 {
+			continue // Skip header atau row dengan kolom tidak lengkap
+		}
+		
+		// Extract fields dari CSV
+		rrn := strings.TrimSpace(row[4])  // Ref_No (column 4)
+		if rrn == "" {
+			continue
+		}
+		
+		// Convert Amount dari string ke float64
+		amount := AmountConverter(row[11], de.log) // Nominal (column 11)
+		
+		// Buat struct SettlementData
+		settlementData := dto.SwitchingSettlementData{
+			SwitchingReconciliationData: dto.SwitchingReconciliationData{
+				RRN:            rrn,
+				Amount:         amount,
+				MerchantPAN:    strings.TrimSpace(row[7]),  // Merchant_PAN (column 7)
+				Criteria:       strings.TrimSpace(row[13]), // Merchant_Criteria (column 13)
+				InvoiceNumber:  strings.TrimSpace(row[5]),  // Trace_No (column 5)
+				CreatedDate:    strings.TrimSpace(row[2]),  // Tanggal_Trx (column 2)
+				CreatedTime:    strings.TrimSpace(row[3]),  // Jam_Trx (column 3)
+				ProcessingCode: strings.TrimSpace(row[1]),  // Trx_Code (column 1)
+			},
+			TraceNo:          strings.TrimSpace(row[5]),  // Trace_No
+			TanggalTrx:       strings.TrimSpace(row[2]),  // Tanggal_Trx
+			JamTrx:           strings.TrimSpace(row[3]),  // Jam_Trx
+			TrxCode:          strings.TrimSpace(row[1]),  // Trx_Code
+			MerchantCriteria: strings.TrimSpace(row[13]), // Merchant_Criteria
+			ConvenienceFee:   strings.TrimSpace(row[16]), // Convenience_Fee (column 16)
+			InterchangeFee:   strings.TrimSpace(row[17]), // Interchange_Fee (column 17)
+		}
+		
+		// Gunakan composite key (RRN + Amount) untuk matching yang akurat
+		key := settlementData.Key() // Format: "RRN|Amount"
+		if _, exists := result[key]; exists {
+			de.log.Warnf("Key settlement duplikat ditemukan: %s", key)
+			continue
+		}
+		
+		result[key] = settlementData
+	}
+	
+	de.log.Infof("Berhasil ekstrak %d records settlement dari CSV", len(result))
+	return result
+}
+
+// ExtractSettlementData mengekstrak data settlement dari file TXT (backward compatibility)
 // Format Settlement: 1 transaksi = 1 baris panjang (500+ karakter) dengan semua field
 // Menggunakan composite key (RRN + Amount) untuk matching
 // Mengembalikan map dengan key = "RRN|Amount"

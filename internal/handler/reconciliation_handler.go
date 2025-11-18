@@ -107,8 +107,8 @@ func (h *ReconciliationHandler) ProcessReconciliation(c *gin.Context) {
 		if reconFiles := form.File[vfk.reconKey]; len(reconFiles) > 0 {
 			validReconFiles := []*multipart.FileHeader{}
 			for _, reconFile := range reconFiles {
-				// Allow both CSV and TXT for recon files
-				if err := h.validator.ValidateFile(reconFile); err != nil {
+				// Allow any file format for recon files (vendor specific format)
+				if err := h.validator.ValidateReconFile(reconFile); err != nil {
 					h.log.Warnf("Skipping %s file %s: %v", vfk.reconKey, reconFile.Filename, err)
 				} else {
 					validReconFiles = append(validReconFiles, reconFile)

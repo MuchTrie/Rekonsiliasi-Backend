@@ -259,23 +259,21 @@ func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobD
 				continue
 			}
 			
-			// Convert TXT to CSV
-			csvPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_%d.csv", vf.Vendor, idx))
-			if err := s.fileConverter.ConvertSettlementTxtToCsv(settlementPath, csvPath); err != nil {
-				s.log.Errorf("Failed to convert %s settlement file %d: %v", vf.Vendor, idx, err)
-				continue
-			}
-			
-			file, err := os.Open(settlementPath)
-			if err != nil {
-				s.log.Errorf("Failed to open %s settlement file %d: %v", vf.Vendor, idx, err)
-				continue
-			}
-			
-			settlementData := s.dataExtractor.ExtractSettlementData(file)
-			file.Close()
-			
-			// Merge data
+		// Convert TXT to CSV
+		csvPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_%d.csv", vf.Vendor, idx))
+		if err := s.fileConverter.ConvertSettlementTxtToCsv(settlementPath, csvPath); err != nil {
+			s.log.Errorf("Failed to convert %s settlement file %d: %v", vf.Vendor, idx, err)
+			continue
+		}
+		
+		file, err := os.Open(csvPath)
+		if err != nil {
+			s.log.Errorf("Failed to open %s settlement CSV %d: %v", vf.Vendor, idx, err)
+			continue
+		}
+		
+		settlementData := s.dataExtractor.ExtractSettlementDataFromCSV(file)
+		file.Close()			// Merge data
 			for rrn, data := range settlementData {
 				allSettlementData[rrn] = data
 			}

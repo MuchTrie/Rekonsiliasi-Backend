@@ -33,10 +33,10 @@ func (v *FileValidator) ValidateFile(file *multipart.FileHeader) error {
 		return fmt.Errorf("file tidak boleh kosong")
 	}
 	
-	// Validasi ekstensi file
+	// Validasi ekstensi file (jika ada ekstensi)
 	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if !v.AllowedExtensions[ext] {
-		return fmt.Errorf("ekstensi file %s tidak diizinkan. Hanya CSV, TXT, atau BIN", ext)
+	if ext != "" && !v.AllowedExtensions[ext] {
+		return fmt.Errorf("ekstensi file %s tidak diizinkan. Hanya CSV, TXT, BIN, atau tanpa ekstensi", ext)
 	}
 	
 	// Validasi ukuran file (jika ada limit)
@@ -48,6 +48,27 @@ func (v *FileValidator) ValidateFile(file *multipart.FileHeader) error {
 		}
 	}
 	
+	return nil
+}
+
+// ValidateReconFile melakukan validasi khusus untuk file reconciliation
+// File recon bisa tanpa ekstensi atau dengan ekstensi apapun (vendor format)
+func (v *FileValidator) ValidateReconFile(file *multipart.FileHeader) error {
+	if file == nil {
+		return fmt.Errorf("file tidak boleh kosong")
+	}
+	
+	// Validasi ukuran file (jika ada limit)
+	if v.MaxFileSizeMB > 0 {
+		maxSize := v.MaxFileSizeMB * 1024 * 1024
+		if file.Size > maxSize {
+			return fmt.Errorf("ukuran file %d MB melebihi limit %d MB", 
+				file.Size/(1024*1024), v.MaxFileSizeMB)
+		}
+	}
+	
+	// Recon file bisa tanpa ekstensi atau dengan ekstensi apapun
+	// Tidak perlu validasi ekstensi karena akan diproses sebagai pipe-delimited text
 	return nil
 }
 
