@@ -35,6 +35,7 @@ type ReconciliationService struct {
 	fileConverter       *FileConverter           // Converter TXT → CSV
 	dataExtractor       *DataExtractor           // Extractor data dari file
 	settlementConverter *SettlementConverter     // Converter settlement khusus
+	duplicateDetector   *DuplicateDetector       // Duplicate RRN detector
 }
 
 // NewReconciliationService membuat instance baru dari ReconciliationService
@@ -51,6 +52,7 @@ func NewReconciliationService(log *logrus.Logger, uploadDir, resultsDir string) 
 		fileConverter:       NewFileConverter(log),
 		dataExtractor:       NewDataExtractor(log),
 		settlementConverter: NewSettlementConverter(log, uploadDir, resultsDir),
+		duplicateDetector:   NewDuplicateDetector(log),
 	}
 }
 
@@ -588,3 +590,110 @@ func (s *ReconciliationService) GetConvertedFiles() ([]map[string]interface{}, e
 func (s *ReconciliationService) PreviewConvertedFile(filename string) (*dto.SettlementConversionResult, error) {
 	return s.settlementConverter.PreviewConvertedFile(filename)
 }
+
+// ============================================================================
+// DUPLICATE DETECTION
+// ============================================================================
+
+// GenerateDuplicateReport generates a complete duplicate detection report for a job
+func (s *ReconciliationService) GenerateDuplicateReport(jobID string) (*dto.DuplicateReport, error) {
+	s.log.Infof("Generating duplicate report for job: %s", jobID)
+	
+	jobDir := filepath.Join(s.resultsDir, jobID)
+	
+	// Check if job directory exists
+	if _, err := os.Stat(jobDir); os.IsNotExist(err) {
+		return nil, fmt.Errorf("job directory not found: %s", jobID)
+	}
+	
+	// Build file paths maps
+	corePath := ""
+	reconPaths := make(map[string]string)
+	settlePaths := make(map[string]string)
+	
+	// Read directory to find files
+	files, err := os.ReadDir(jobDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read job directory: %w", err)
+	}
+	
+	// Identify files by pattern
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		
+		filename := file.Name()
+		fullPath := filepath.Join(jobDir, filename)
+		
+		// CORE file pattern: *_core.csv
+		if matched, _ := filepath.Match("*_core.csv", filename); matched {
+			corePath = fullPath
+			continue
+		}
+		
+		// RECON file pattern: *_recon_*.csv (exclude *_result.csv)
+		if matched, _ := filepath.Match("*_recon_*.csv", filename); matched {
+			if matched2, _ := filepath.Match("*_result.csv", filename); !matched2 {
+				// Extract vendor name from filename (e.g., "alto_recon_0.csv" -> "alto")
+				vendor := extractVendorFromFilename(filename)
+				if vendor != "" {
+					reconPaths[vendor] = fullPath
+				}
+			}
+			continue
+		}
+		
+		// SETTLEMENT file pattern: *_settlement_*.csv (exclude *_result.csv)
+		if matched, _ := filepath.Match("*_settlement_*.csv", filename); matched {
+			if matched2, _ := filepath.Match("*_result.csv", filename); !matched2 {
+				vendor := extractVendorFromFilename(filename)
+				if vendor != "" {
+					settlePaths[vendor] = fullPath
+				}
+			}
+			continue
+		}
+	}
+	
+	// Generate report
+	report, err := s.duplicateDetector.GenerateDuplicateReport(jobID, corePath, reconPaths, settlePaths)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate duplicate report: %w", err)
+	}
+	
+	return report, nil
+}
+
+// ExportDuplicateReportToCSV exports duplicate report to CSV file
+func (s *ReconciliationService) ExportDuplicateReportToCSV(jobID string, report *dto.DuplicateReport) (string, error) {
+	s.log.Infof("Exporting duplicate report to CSV for job: %s", jobID)
+	
+	jobDir := filepath.Join(s.resultsDir, jobID)
+	outputPath := filepath.Join(jobDir, fmt.Sprintf("%s_duplicate_report.csv", jobID))
+	
+	err := s.duplicateDetector.ExportDuplicatesToCSV(report, outputPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to export duplicate report: %w", err)
+	}
+	
+	return outputPath, nil
+}
+
+// extractVendorFromFilename extracts vendor name from filename
+// Example: "alto_recon_0.csv" -> "alto", "jalin_settlement_0.csv" -> "jalin"
+func extractVendorFromFilename(filename string) string {
+	vendors := []string{"alto", "jalin", "aj", "rinti"}
+	filenameLower := filepath.Base(filename)
+	filenameLower = filepath.Ext(filenameLower) // Remove extension
+	filenameLower = filename[:len(filename)-len(filepath.Ext(filename))]
+	
+	for _, vendor := range vendors {
+		if len(filenameLower) >= len(vendor) && filenameLower[:len(vendor)] == vendor {
+			return vendor
+		}
+	}
+	
+	return ""
+}
+

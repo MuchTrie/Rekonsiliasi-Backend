@@ -126,6 +126,10 @@ func main() {
 			protected.GET("/results/:jobId/:vendor/:type", reconHandler.GetResultData)
 			protected.GET("/download/:jobId/:filename", reconHandler.DownloadResult)
 			
+			// Duplicate detection endpoints
+			protected.GET("/duplicates/:job_id", reconHandler.GetDuplicateReport)
+			protected.GET("/duplicates/:job_id/download", reconHandler.DownloadDuplicateReport)
+			
 			// Settlement conversion endpoint - Admin dan Operasional
 			protected.POST("/convert/settlement", reconHandler.ConvertSettlement)
 			protected.GET("/converted/files", reconHandler.GetConvertedFiles)

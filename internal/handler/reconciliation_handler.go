@@ -385,3 +385,84 @@ func (h *ReconciliationHandler) PreviewConvertedFile(c *gin.Context) {
 		Data:    result,
 	})
 }
+
+// GetDuplicateReport handles duplicate detection and report generation
+func (h *ReconciliationHandler) GetDuplicateReport(c *gin.Context) {
+	jobID := c.Param("job_id")
+	
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, dto.APIResponse{
+			Success: false,
+			Message: "Job ID is required",
+			Error:   "Missing job_id parameter",
+		})
+		return
+	}
+	
+	h.log.Infof("Generating duplicate report for job: %s", jobID)
+	
+	// Call service to generate report
+	report, err := h.service.GenerateDuplicateReport(jobID)
+	if err != nil {
+		h.log.Errorf("Failed to generate duplicate report: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Failed to generate duplicate report",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, dto.APIResponse{
+		Success: true,
+		Message: "Duplicate report generated successfully",
+		Data:    report,
+	})
+}
+
+// DownloadDuplicateReport handles duplicate report CSV download
+func (h *ReconciliationHandler) DownloadDuplicateReport(c *gin.Context) {
+	jobID := c.Param("job_id")
+	
+	if jobID == "" {
+		c.JSON(http.StatusBadRequest, dto.APIResponse{
+			Success: false,
+			Message: "Job ID is required",
+		})
+		return
+	}
+	
+	h.log.Infof("Downloading duplicate report CSV for job: %s", jobID)
+	
+	// Generate report
+	report, err := h.service.GenerateDuplicateReport(jobID)
+	if err != nil {
+		h.log.Errorf("Failed to generate duplicate report: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Failed to generate duplicate report",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	// Export to CSV
+	csvPath, err := h.service.ExportDuplicateReportToCSV(jobID, report)
+	if err != nil {
+		h.log.Errorf("Failed to export duplicate report: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Failed to export duplicate report",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	// Send file
+	c.Header("Content-Description", "File Transfer")
+	c.Header("Content-Transfer-Encoding", "binary")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s_duplicate_report.csv", jobID))
+	c.Header("Content-Type", "text/csv")
+	c.File(csvPath)
+}
+
