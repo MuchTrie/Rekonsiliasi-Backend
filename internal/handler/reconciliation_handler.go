@@ -362,3 +362,26 @@ func (h *ReconciliationHandler) GetConvertedFiles(c *gin.Context) {
 		Data:    files,
 	})
 }
+
+// PreviewConvertedFile returns preview of a previously converted settlement file
+func (h *ReconciliationHandler) PreviewConvertedFile(c *gin.Context) {
+	filename := c.Param("filename")
+	h.log.Infof("Previewing converted settlement file: %s", filename)
+	
+	result, err := h.service.PreviewConvertedFile(filename)
+	if err != nil {
+		h.log.Errorf("Failed to preview converted file: %v", err)
+		c.JSON(http.StatusInternalServerError, dto.APIResponse{
+			Success: false,
+			Message: "Failed to preview file",
+			Error:   err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, dto.APIResponse{
+		Success: true,
+		Message: "File preview retrieved successfully",
+		Data:    result,
+	})
+}

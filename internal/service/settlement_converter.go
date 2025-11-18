@@ -162,3 +162,63 @@ func (sc *SettlementConverter) GetConvertedFiles() ([]map[string]interface{}, er
 	
 	return files, nil
 }
+
+// PreviewConvertedFile returns preview of a previously converted settlement file
+func (sc *SettlementConverter) PreviewConvertedFile(filename string) (*dto.SettlementConversionResult, error) {
+	convertedDir := filepath.Join(sc.resultsDir, "converted")
+	csvPath := filepath.Join(convertedDir, filename)
+	
+	// Check if file exists
+	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("file not found: %s", filename)
+	}
+	
+	// Read CSV file
+	csvFile, err := os.Open(csvPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open CSV file: %w", err)
+	}
+	defer csvFile.Close()
+	
+	reader := csv.NewReader(csvFile)
+	
+	// Read header
+	headers, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV header: %w", err)
+	}
+	
+	// Read all records for count
+	allRecords, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV records: %w", err)
+	}
+	
+	totalRecords := len(allRecords)
+	
+	// Build preview (limit to 100 records)
+	previewLimit := 100
+	if totalRecords < previewLimit {
+		previewLimit = totalRecords
+	}
+	
+	previewRecords := make([]map[string]interface{}, 0, previewLimit)
+	for i := 0; i < previewLimit; i++ {
+		record := make(map[string]interface{})
+		for j, header := range headers {
+			if j < len(allRecords[i]) {
+				record[header] = allRecords[i][j]
+			}
+		}
+		previewRecords = append(previewRecords, record)
+	}
+	
+	downloadURL := fmt.Sprintf("/api/download/converted/%s", filename)
+	
+	return &dto.SettlementConversionResult{
+		Filename:       filename,
+		TotalRecords:   totalRecords,
+		PreviewRecords: previewRecords,
+		DownloadURL:    downloadURL,
+	}, nil
+}

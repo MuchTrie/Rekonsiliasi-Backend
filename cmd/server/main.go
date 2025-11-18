@@ -129,6 +129,7 @@ func main() {
 			// Settlement conversion endpoint - Admin dan Operasional
 			protected.POST("/convert/settlement", reconHandler.ConvertSettlement)
 			protected.GET("/converted/files", reconHandler.GetConvertedFiles)
+			protected.GET("/preview/converted/:filename", reconHandler.PreviewConvertedFile)
 		}
 	}
 	

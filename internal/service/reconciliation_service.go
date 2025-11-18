@@ -583,3 +583,8 @@ func (s *ReconciliationService) ConvertSettlementFile(file *multipart.FileHeader
 func (s *ReconciliationService) GetConvertedFiles() ([]map[string]interface{}, error) {
 	return s.settlementConverter.GetConvertedFiles()
 }
+
+// PreviewConvertedFile delegates to SettlementConverter
+func (s *ReconciliationService) PreviewConvertedFile(filename string) (*dto.SettlementConversionResult, error) {
+	return s.settlementConverter.PreviewConvertedFile(filename)
+}
