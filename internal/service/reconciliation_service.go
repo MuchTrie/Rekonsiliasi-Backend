@@ -617,6 +617,8 @@ func (s *ReconciliationService) GenerateDuplicateReport(jobID string) (*dto.Dupl
 		return nil, fmt.Errorf("failed to read job directory: %w", err)
 	}
 	
+	s.log.Infof("📂 Scanning job directory: %s", jobDir)
+	
 	// Identify files by pattern
 	for _, file := range files {
 		if file.IsDir() {
@@ -629,6 +631,7 @@ func (s *ReconciliationService) GenerateDuplicateReport(jobID string) (*dto.Dupl
 		// CORE file pattern: *_core.csv
 		if matched, _ := filepath.Match("*_core.csv", filename); matched {
 			corePath = fullPath
+			s.log.Infof("✅ Found CORE file: %s", filename)
 			continue
 		}
 		
@@ -639,6 +642,7 @@ func (s *ReconciliationService) GenerateDuplicateReport(jobID string) (*dto.Dupl
 				vendor := extractVendorFromFilename(filename)
 				if vendor != "" {
 					reconPaths[vendor] = fullPath
+					s.log.Infof("✅ Found RECON file for %s: %s", vendor, filename)
 				}
 			}
 			continue
@@ -650,11 +654,16 @@ func (s *ReconciliationService) GenerateDuplicateReport(jobID string) (*dto.Dupl
 				vendor := extractVendorFromFilename(filename)
 				if vendor != "" {
 					settlePaths[vendor] = fullPath
+					s.log.Infof("✅ Found SETTLEMENT file for %s: %s", vendor, filename)
 				}
 			}
 			continue
 		}
 	}
+	
+	// Log summary
+	s.log.Infof("📊 Files found - CORE: %v, RECON: %d vendors, SETTLEMENT: %d vendors", 
+		corePath != "", len(reconPaths), len(settlePaths))
 	
 	// Generate report
 	report, err := s.duplicateDetector.GenerateDuplicateReport(jobID, corePath, reconPaths, settlePaths)

@@ -161,8 +161,8 @@ func (dd *DuplicateDetector) DetectReconDuplicates(reconPath, vendor string) ([]
 			Source:      "SWITCHING_RECON",
 			FileName:    reconPath,
 			Vendor:      vendor,
-			CreatedDate: strings.TrimSpace(row[8]), // Created Date di kolom 8
-			CreatedTime: strings.TrimSpace(row[9]), // Created Time di kolom 9
+			CreatedDate: strings.TrimSpace(row[4]), // Created Date di kolom 4 (bukan 8!)
+			CreatedTime: strings.TrimSpace(row[5]), // Created Time di kolom 5 (bukan 9!)
 		}
 
 		rrnMap[rrn] = append(rrnMap[rrn], record)
