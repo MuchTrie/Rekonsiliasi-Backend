@@ -54,7 +54,7 @@ type Claims struct {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 		return
 	}
 
@@ -63,14 +63,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// Check if user already exists
 	var existingUser models.User
 	if err := db.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Email already registered"})
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "Email already registered"})
 		return
 	}
 
 	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to hash password"})
 		return
 	}
 
@@ -82,23 +82,27 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	if err := db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to create user"})
 		return
 	}
 
 	// Generate JWT token
 	token, err := h.generateToken(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to generate token"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, AuthResponse{
-		Token: token,
-		User: UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Role:  user.Role,
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"message": "User registered successfully",
+		"data": AuthResponse{
+			Token: token,
+			User: UserResponse{
+				ID:    user.ID,
+				Email: user.Email,
+				Role:  user.Role,
+			},
 		},
 	})
 }
@@ -107,7 +111,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 		return
 	}
 
@@ -116,29 +120,33 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Find user by email
 	var user models.User
 	if err := db.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Invalid email or password"})
 		return
 	}
 
 	// Verify password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Invalid email or password"})
 		return
 	}
 
 	// Generate JWT token
 	token, err := h.generateToken(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to generate token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, AuthResponse{
-		Token: token,
-		User: UserResponse{
-			ID:    user.ID,
-			Email: user.Email,
-			Role:  user.Role,
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Login successful",
+		"data": AuthResponse{
+			Token: token,
+			User: UserResponse{
+				ID:    user.ID,
+				Email: user.Email,
+				Role:  user.Role,
+			},
 		},
 	})
 }
