@@ -9,6 +9,7 @@ import (
 type User struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
 	Email     string         `gorm:"type:varchar(255);uniqueIndex;not null" json:"email"`
+	Username  string         `gorm:"type:varchar(100)" json:"username"`
 	Password  string         `gorm:"type:varchar(255);not null" json:"-"` // "-" means this field won't be included in JSON
 	Role      string         `gorm:"type:enum('admin','operasional');not null" json:"role"`
 	CreatedAt time.Time      `json:"created_at"`

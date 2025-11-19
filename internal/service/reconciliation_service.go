@@ -706,3 +706,7 @@ func extractVendorFromFilename(filename string) string {
 	return ""
 }
 
+// GetResultsDir returns the results directory path
+func (s *ReconciliationService) GetResultsDir() string {
+	return s.resultsDir
+}

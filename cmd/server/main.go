@@ -107,6 +107,10 @@ func main() {
 			// Current user info
 			protected.GET("/auth/me", authHandlerInstance.GetMe)
 			
+			// Profile management
+			protected.PUT("/profile", authHandlerInstance.UpdateProfile)
+			protected.PUT("/change-password", authHandlerInstance.ChangePassword)
+			
 			// Settings endpoints
 			protected.GET("/settings", settingsHandlerInstance.GetSettings)
 			protected.GET("/settings/:feature", settingsHandlerInstance.GetSetting)

@@ -30,6 +30,16 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type UpdateProfileRequest struct {
+	Username string `json:"username" binding:"required,min=3"`
+	Email    string `json:"email" binding:"required,email"`
+}
+
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword" binding:"required"`
+	NewPassword     string `json:"newPassword" binding:"required,min=6"`
+}
+
 // Response DTOs
 type AuthResponse struct {
 	Token string       `json:"token"`
@@ -37,9 +47,10 @@ type AuthResponse struct {
 }
 
 type UserResponse struct {
-	ID    uint   `json:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID       uint   `json:"id"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+	Username string `json:"username,omitempty"`
 }
 
 // JWT Claims
@@ -99,9 +110,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		"data": AuthResponse{
 			Token: token,
 			User: UserResponse{
-				ID:    user.ID,
-				Email: user.Email,
-				Role:  user.Role,
+				ID:       user.ID,
+				Email:    user.Email,
+				Role:     user.Role,
+				Username: user.Username,
 			},
 		},
 	})
@@ -143,9 +155,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"data": AuthResponse{
 			Token: token,
 			User: UserResponse{
-				ID:    user.ID,
-				Email: user.Email,
-				Role:  user.Role,
+				ID:       user.ID,
+				Email:    user.Email,
+				Role:     user.Role,
+				Username: user.Username,
 			},
 		},
 	})
@@ -196,5 +209,139 @@ func (h *AuthHandler) GetMe(c *gin.Context) {
 		ID:    claims.ID,
 		Email: claims.Email,
 		Role:  claims.Role,
+	})
+}
+
+// UpdateProfile updates user profile (username and email)
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
+	var req UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	// Get user from context
+	userInterface, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Unauthorized"})
+		return
+	}
+
+	claims, ok := userInterface.(*Claims)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Invalid user data"})
+		return
+	}
+
+	db := database.GetDB()
+
+	// Check if email is being changed and already exists
+	if req.Email != claims.Email {
+		var existingUser models.User
+		if err := db.Where("email = ? AND id != ?", req.Email, claims.ID).First(&existingUser).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": "Email already in use"})
+			return
+		}
+	}
+
+	// Update user
+	updates := map[string]interface{}{
+		"username": req.Username,
+		"email":    req.Email,
+	}
+
+	if err := db.Model(&models.User{}).Where("id = ?", claims.ID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to update profile"})
+		return
+	}
+
+	// Get updated user
+	var user models.User
+	if err := db.First(&user, claims.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to retrieve updated user"})
+		return
+	}
+
+	// Generate new token if email changed
+	token := ""
+	if req.Email != claims.Email {
+		var err error
+		token, err = h.generateToken(user)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to generate new token"})
+			return
+		}
+	}
+
+	response := gin.H{
+		"success": true,
+		"message": "Profile updated successfully",
+		"data": UserResponse{
+			ID:       user.ID,
+			Email:    user.Email,
+			Role:     user.Role,
+			Username: user.Username,
+		},
+	}
+
+	if token != "" {
+		response["token"] = token
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// ChangePassword changes user password
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	var req ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	// Get user from context
+	userInterface, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Unauthorized"})
+		return
+	}
+
+	claims, ok := userInterface.(*Claims)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Invalid user data"})
+		return
+	}
+
+	db := database.GetDB()
+
+	// Get current user
+	var user models.User
+	if err := db.First(&user, claims.ID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "User not found"})
+		return
+	}
+
+	// Verify current password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.CurrentPassword)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Current password is incorrect"})
+		return
+	}
+
+	// Hash new password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to hash new password"})
+		return
+	}
+
+	// Update password
+	if err := db.Model(&user).Update("password", string(hashedPassword)).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to update password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Password changed successfully",
 	})
 }

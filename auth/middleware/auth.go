@@ -13,6 +13,12 @@ import (
 // AuthMiddleware validates JWT token
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip authentication for OPTIONS requests (CORS preflight)
+		if c.Request.Method == "OPTIONS" {
+			c.Next()
+			return
+		}
+
 		// Get token from Authorization header
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
