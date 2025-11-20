@@ -19,9 +19,6 @@ WORKDIR /app
 # Copy only built binary
 COPY --from=builder /app/server ./server
 
-# Copy env file (optional)
-COPY --from=builder /app/.env .env
-
 EXPOSE 8080
 
 CMD ["/app/server"]    

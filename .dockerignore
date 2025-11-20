@@ -1,7 +1,0 @@
-**/node_modules
-**/dist
-**/.git
-**/tmp
-*.log
-*.exe
-.DS_Store
