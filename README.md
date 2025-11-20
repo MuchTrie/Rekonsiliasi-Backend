@@ -274,5 +274,5 @@ Jika mengalami masalah atau ada pertanyaan:
 
 ---
 
-**Last Updated**: November 14, 2025  
+**Last Updated**: November 20, 2025  
 **Version**: 1.0.0
