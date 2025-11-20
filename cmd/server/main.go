@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ciptami/switching-reconcile-web/internal/handler"
 	"github.com/ciptami/switching-reconcile-web/internal/middleware"
@@ -61,6 +63,7 @@ func main() {
 		baseDir = filepath.Dir(baseDir)
 	}
 	
+	fmt.Println("\n" + strings.Repeat("=", 60))
 	log.Infof("Base directory: %s", baseDir)
 	
 	// Create required directories in backend folder
@@ -75,12 +78,24 @@ func main() {
 		log.Infof("Directory ready: %s", dir)
 	}
 	
+	fmt.Println(strings.Repeat("=", 60))
+	
 	// Initialize dependencies with absolute paths
 	fileValidator := validator.NewFileValidator()
 	reconService := service.NewReconciliationService(log, uploadDir, resultsDir)
 	reconHandler := handler.NewReconciliationHandler(reconService, fileValidator, log)
 	
-	// Initialize auth handlers
+	// Initialize cleanup service
+	cleanupService := service.NewCleanupService(resultsDir, log)
+	
+	// Check for old folders and prompt for cleanup
+	fmt.Println("\n🧹 PENGECEKAN DATA LAMA")
+	fmt.Println(strings.Repeat("-", 60))
+	checkAndCleanupOldFolders(cleanupService, log)
+	fmt.Println(strings.Repeat("-", 60))
+	fmt.Println()
+	
+	// Initialize auth dependencies
 	authHandlerInstance := authHandler.NewAuthHandler()
 	settingsHandlerInstance := authHandler.NewSettingsHandler()
 	
@@ -159,11 +174,58 @@ func main() {
 	}
 	
 	// Start server
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("🚀 STARTING SERVER")
+	fmt.Println(strings.Repeat("=", 60))
 	addr := fmt.Sprintf(":%s", port)
 	log.Infof("Server is running on http://localhost%s", addr)
 	log.Infof("API Documentation: http://localhost%s/api/health", addr)
+	fmt.Println(strings.Repeat("=", 60) + "\n")
 	
 	if err := router.Run(addr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+func checkAndCleanupOldFolders(cleanupService *service.CleanupService, log *logrus.Logger) {
+	retentionDays := 3
+	log.Info("🔍 Mengecek hasil rekonsiliasi lama...")
+	
+	oldFolders, err := cleanupService.CheckOldFolders(retentionDays)
+	if err != nil {
+		log.Warnf("Gagal memeriksa folder lama: %v", err)
+		return
+	}
+	
+	if len(oldFolders) == 0 {
+		log.Info("✅ Tidak ada folder yang lebih dari 3 hari")
+		return
+	}
+	
+	// Display old folders
+	log.Infof("📁 Ditemukan %d folder lebih dari %d hari:", len(oldFolders), retentionDays)
+	for i, folder := range oldFolders {
+		log.Infof("  [%d] %s (%d hari) - %d file", i+1, folder.Name, folder.Age, folder.FileCount)
+	}
+	
+	// Prompt user for confirmation
+	fmt.Print("❓ Apakah ingin menghapus folder ini? (Y/N): ")
+	reader := bufio.NewReader(os.Stdin)
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		log.Warnf("Gagal membaca input: %v", err)
+		return
+	}
+	
+	// Trim whitespace and check response
+	input = strings.TrimSpace(input)
+	if strings.ToUpper(input) == "Y" {
+		if err := cleanupService.DeleteFolders(oldFolders); err != nil {
+			log.Errorf("Gagal menghapus folder: %v", err)
+		} else {
+			log.Infof("✅ Berhasil menghapus %d folder", len(oldFolders))
+		}
+	} else {
+		log.Info("⏭️  Melewati penghapusan folder")
 	}
 }
