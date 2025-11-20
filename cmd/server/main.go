@@ -1,17 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ciptami/switching-reconcile-web/internal/handler"
 	"github.com/ciptami/switching-reconcile-web/internal/middleware"
 	"github.com/ciptami/switching-reconcile-web/internal/service"
 	"github.com/ciptami/switching-reconcile-web/pkg/validator"
-	
+
 	// Auth imports
 	"github.com/ciptami/switching-reconcile-web/auth/database"
 	"github.com/ciptami/switching-reconcile-web/auth/seeder"
@@ -73,28 +75,86 @@ func main() {
 	dirs := []string{uploadDir, resultsDir}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-			log.Fatalf("Failed to create directory %s: %v", dir, err)
+			log.Fatalf("❌ Failed to create directory %s: %v", dir, err)
 		}
-		log.Infof("Directory ready: %s", dir)
+		log.Printf("✅ Directory ready: %s\n", dir)
 	}
-	
-	fmt.Println(strings.Repeat("=", 60))
-	
+
+	// ==========================================
+	// 🧹 CLEANUP SERVICE INITIALIZATION
+	// ==========================================
+	printCleanupHeader()
+
+	// Get retention days from environment (default: 3)
+	retentionDays := 3
+	if envDays := os.Getenv("RETENTION_DAYS"); envDays != "" {
+		if days, err := strconv.Atoi(envDays); err == nil && days > 0 {
+			retentionDays = days
+		}
+	}
+
+	cleanupService := service.NewCleanupService(resultsDir)
+
+	// Check if auto-cleanup is enabled (default: true)
+	autoCleanupEnabled := os.Getenv("AUTO_CLEANUP") != "false"
+
+	if autoCleanupEnabled {
+		// ==========================================
+		// OPSI 1: AUTO-CLEANUP ON STARTUP
+		// ==========================================
+		log.Printf("🔍 Mengecek hasil rekonsiliasi yang lebih dari %d hari...\n", retentionDays)
+
+		oldFolders, err := cleanupService.GetOldFolders(retentionDays)
+		if err != nil {
+			log.Printf("⚠️  Error saat mengecek folder lama: %v\n", err)
+		} else if len(oldFolders) == 0 {
+			log.Printf("✅ Tidak ada folder yang lebih dari %d hari\n", retentionDays)
+		} else {
+			// Tampilkan preview
+			var totalSize int64
+			log.Printf("\n📁 Ditemukan %d folder yang akan dihapus:\n", len(oldFolders))
+			for i, folder := range oldFolders {
+				log.Printf("  [%d] %s (%d hari, %d files, %.2f MB)\n",
+					i+1, folder.Name, folder.DaysOld, folder.FileCount, folder.SizeMB)
+				totalSize += folder.SizeBytes
+			}
+			log.Printf("💾 Total ukuran: %.2f MB\n\n", float64(totalSize)/(1024*1024))
+
+			// Langsung hapus tanpa konfirmasi
+			log.Println("🗑️  Memulai proses cleanup...")
+			deletedCount, err := cleanupService.AutoCleanup(retentionDays)
+			if err != nil {
+				log.Printf("⚠️  Error saat cleanup: %v\n", err)
+			} else if deletedCount > 0 {
+				log.Printf("✅ Cleanup startup selesai\n")
+			}
+		}
+
+		// ==========================================
+		// OPSI 2: SCHEDULED CLEANUP (DAILY)
+		// ==========================================
+		go startScheduledCleanup(cleanupService, retentionDays)
+	} else {
+		log.Println("⏭️  Auto-cleanup disabled (set AUTO_CLEANUP=true to enable)")
+	}
+
+	printSeparator()
+
+	// ==========================================
+	// 🌐 INITIALIZE HANDLERS & ROUTER
+	// ==========================================
+	printServerHeader()
+
+	// Initialize logger for services
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+	logger.SetLevel(logrus.InfoLevel)
+
 	// Initialize dependencies with absolute paths
 	fileValidator := validator.NewFileValidator()
-	reconService := service.NewReconciliationService(log, uploadDir, resultsDir)
-	reconHandler := handler.NewReconciliationHandler(reconService, fileValidator, log)
-	
-	// Initialize cleanup service
-	cleanupService := service.NewCleanupService(resultsDir, log)
-	
-	// Check for old folders and prompt for cleanup
-	fmt.Println("\n🧹 PENGECEKAN DATA LAMA")
-	fmt.Println(strings.Repeat("-", 60))
-	checkAndCleanupOldFolders(cleanupService, log)
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Println()
-	
+	reconService := service.NewReconciliationService(logger, uploadDir, resultsDir)
+	reconHandler := handler.NewReconciliationHandler(reconService, fileValidator, logger)
+
 	// Initialize auth dependencies
 	authHandlerInstance := authHandler.NewAuthHandler()
 	settingsHandlerInstance := authHandler.NewSettingsHandler()
@@ -166,66 +226,90 @@ func main() {
 	// Static files (for serving frontend in production)
 	router.Static("/static", "./frontend/dist")
 	router.StaticFile("/", "./frontend/dist/index.html")
-	
+
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	
+
 	// Start server
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("🚀 STARTING SERVER")
-	fmt.Println(strings.Repeat("=", 60))
 	addr := fmt.Sprintf(":%s", port)
-	log.Infof("Server is running on http://localhost%s", addr)
-	log.Infof("API Documentation: http://localhost%s/api/health", addr)
-	fmt.Println(strings.Repeat("=", 60) + "\n")
-	
+	log.Printf("🚀 Server is running on http://localhost%s\n", addr)
+	log.Printf("📖 API Documentation: http://localhost%s/api/health\n", addr)
+	printSeparator()
+
 	if err := router.Run(addr); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		log.Fatalf("❌ Failed to start server: %v", err)
 	}
 }
 
-func checkAndCleanupOldFolders(cleanupService *service.CleanupService, log *logrus.Logger) {
-	retentionDays := 3
-	log.Info("🔍 Mengecek hasil rekonsiliasi lama...")
-	
-	oldFolders, err := cleanupService.CheckOldFolders(retentionDays)
+// ==========================================
+// SCHEDULED CLEANUP GOROUTINE
+// ==========================================
+func startScheduledCleanup(cleanupService *service.CleanupService, retentionDays int) {
+	log.Println("⏰ Scheduled cleanup dimulai (setiap hari jam 00:00)")
+
+	// Hitung waktu untuk cleanup pertama (jam 00:00 besok)
+	now := time.Now()
+	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	durationUntilMidnight := time.Until(nextMidnight)
+
+	// Tunggu sampai tengah malam pertama
+	time.Sleep(durationUntilMidnight)
+
+	// Cleanup pertama
+	runScheduledCleanup(cleanupService, retentionDays)
+
+	// Lalu jalankan setiap 24 jam
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		runScheduledCleanup(cleanupService, retentionDays)
+	}
+}
+
+func runScheduledCleanup(cleanupService *service.CleanupService, retentionDays int) {
+	log.Println("\n========================================")
+	log.Println("🕛 SCHEDULED CLEANUP - " + time.Now().Format("2006-01-02 15:04:05"))
+	log.Println("========================================")
+
+	deletedCount, err := cleanupService.AutoCleanup(retentionDays)
 	if err != nil {
-		log.Warnf("Gagal memeriksa folder lama: %v", err)
-		return
-	}
-	
-	if len(oldFolders) == 0 {
-		log.Info("✅ Tidak ada folder yang lebih dari 3 hari")
-		return
-	}
-	
-	// Display old folders
-	log.Infof("📁 Ditemukan %d folder lebih dari %d hari:", len(oldFolders), retentionDays)
-	for i, folder := range oldFolders {
-		log.Infof("  [%d] %s (%d hari) - %d file", i+1, folder.Name, folder.Age, folder.FileCount)
-	}
-	
-	// Prompt user for confirmation
-	fmt.Print("❓ Apakah ingin menghapus folder ini? (Y/N): ")
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		log.Warnf("Gagal membaca input: %v", err)
-		return
-	}
-	
-	// Trim whitespace and check response
-	input = strings.TrimSpace(input)
-	if strings.ToUpper(input) == "Y" {
-		if err := cleanupService.DeleteFolders(oldFolders); err != nil {
-			log.Errorf("Gagal menghapus folder: %v", err)
-		} else {
-			log.Infof("✅ Berhasil menghapus %d folder", len(oldFolders))
-		}
+		log.Printf("⚠️  Scheduled cleanup error: %v\n", err)
+	} else if deletedCount > 0 {
+		log.Printf("✅ Scheduled cleanup selesai: %d folder dihapus\n", deletedCount)
 	} else {
-		log.Info("⏭️  Melewati penghapusan folder")
+		log.Printf("✅ Tidak ada folder yang perlu dihapus\n")
 	}
+
+	log.Println("========================================\n")
+}
+
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
+
+func printBanner() {
+	fmt.Println("\n========================================")
+	fmt.Println("   🚀 SWITCHING RECONCILIATION SERVER")
+	fmt.Println("========================================\n")
+}
+
+func printSeparator() {
+	fmt.Println("========================================\n")
+}
+
+func printCleanupHeader() {
+	fmt.Println("\n========================================")
+	fmt.Println("        🧹 CLEANUP SERVICE")
+	fmt.Println("========================================")
+}
+
+func printServerHeader() {
+	fmt.Println("========================================")
+	fmt.Println("      🌐 STARTING WEB SERVER")
+	fmt.Println("========================================\n")
+	time.Sleep(300 * time.Millisecond)
 }

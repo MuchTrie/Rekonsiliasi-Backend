@@ -2,87 +2,116 @@ package service
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
-// CleanupService handles cleanup of old reconciliation results
 type CleanupService struct {
 	resultsDir string
-	log        *logrus.Logger
 }
 
-// NewCleanupService creates a new cleanup service
-func NewCleanupService(resultsDir string, log *logrus.Logger) *CleanupService {
+type FolderInfo struct {
+	Name      string
+	Path      string
+	Date      time.Time
+	DaysOld   int
+	FileCount int
+	SizeBytes int64
+	SizeMB    float64
+}
+
+func NewCleanupService(resultsDir string) *CleanupService {
 	return &CleanupService{
 		resultsDir: resultsDir,
-		log:        log,
 	}
 }
 
-// OldFolder represents a folder that is older than retention period
-type OldFolder struct {
-	Name     string
-	Path     string
-	Age      int // days
-	FileCount int
-}
+// AutoCleanup - Hapus otomatis folder > retention days
+func (s *CleanupService) AutoCleanup(retentionDays int) (int, error) {
+	cutoffDate := time.Now().AddDate(0, 0, -retentionDays)
 
-// CheckOldFolders checks for folders older than the specified days
-func (s *CleanupService) CheckOldFolders(retentionDays int) ([]OldFolder, error) {
-	var oldFolders []OldFolder
-
-	// Read all folders in results directory
 	entries, err := os.ReadDir(s.resultsDir)
 	if err != nil {
-		return nil, fmt.Errorf("gagal membaca direktori results: %v", err)
+		return 0, fmt.Errorf("gagal membaca direktori results: %w", err)
 	}
 
-	now := time.Now()
+	deletedCount := 0
+	var totalSize int64
 
 	for _, entry := range entries {
-		// Skip if not a directory
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Name() == "converted" {
 			continue
 		}
 
-		folderName := entry.Name()
-
-		// Skip special folders
-		if folderName == "converted" || folderName == "temp" {
-			continue
-		}
-
-		// Parse date from folder name (format: 0001-18-11-2025)
-		folderDate, err := s.parseFolderDate(folderName)
+		folderDate, err := s.parseFolderDate(entry.Name())
 		if err != nil {
-			s.log.Warnf("Tidak dapat parse tanggal dari folder %s: %v", folderName, err)
 			continue
 		}
 
-		// Calculate age in days
-		age := int(now.Sub(folderDate).Hours() / 24)
+		if folderDate.Before(cutoffDate) {
+			folderPath := filepath.Join(s.resultsDir, entry.Name())
+			fileCount, sizeBytes := s.getFolderStats(folderPath)
+			daysOld := int(time.Since(folderDate).Hours() / 24)
 
-		// Check if older than retention period
-		if age > retentionDays {
-			folderPath := filepath.Join(s.resultsDir, folderName)
-			
-			// Count files in folder
-			fileCount, err := s.countFiles(folderPath)
-			if err != nil {
-				s.log.Warnf("Tidak dapat hitung file di folder %s: %v", folderName, err)
-				fileCount = 0
+			// Hapus folder
+			if err := os.RemoveAll(folderPath); err != nil {
+				log.Printf("⚠️  Gagal menghapus %s: %v\n", entry.Name(), err)
+				continue
 			}
 
-			oldFolders = append(oldFolders, OldFolder{
-				Name:      folderName,
+			deletedCount++
+			totalSize += sizeBytes
+			sizeMB := float64(sizeBytes) / (1024 * 1024)
+
+			log.Printf("✅ Terhapus: %s (%d hari, %d files, %.2f MB)\n",
+				entry.Name(), daysOld, fileCount, sizeMB)
+		}
+	}
+
+	if deletedCount > 0 {
+		totalSizeMB := float64(totalSize) / (1024 * 1024)
+		log.Printf("🎉 Total: %d folder dihapus (%.2f MB dibebaskan)\n", deletedCount, totalSizeMB)
+	}
+
+	return deletedCount, nil
+}
+
+// GetOldFolders - Preview folder yang akan dihapus (untuk monitoring/logging)
+func (s *CleanupService) GetOldFolders(retentionDays int) ([]FolderInfo, error) {
+	var oldFolders []FolderInfo
+	cutoffDate := time.Now().AddDate(0, 0, -retentionDays)
+
+	entries, err := os.ReadDir(s.resultsDir)
+	if err != nil {
+		return nil, fmt.Errorf("gagal membaca direktori results: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == "converted" {
+			continue
+		}
+
+		folderDate, err := s.parseFolderDate(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		if folderDate.Before(cutoffDate) {
+			folderPath := filepath.Join(s.resultsDir, entry.Name())
+			fileCount, sizeBytes := s.getFolderStats(folderPath)
+			daysOld := int(time.Since(folderDate).Hours() / 24)
+
+			oldFolders = append(oldFolders, FolderInfo{
+				Name:      entry.Name(),
 				Path:      folderPath,
-				Age:       age,
+				Date:      folderDate,
+				DaysOld:   daysOld,
 				FileCount: fileCount,
+				SizeBytes: sizeBytes,
+				SizeMB:    float64(sizeBytes) / (1024 * 1024),
 			})
 		}
 	}
@@ -90,89 +119,29 @@ func (s *CleanupService) CheckOldFolders(retentionDays int) ([]OldFolder, error)
 	return oldFolders, nil
 }
 
-// DeleteFolders deletes the specified folders
-func (s *CleanupService) DeleteFolders(folders []OldFolder) error {
-	var totalSize int64
-	deletedCount := 0
-
-	for _, folder := range folders {
-		// Calculate folder size before deletion
-		size, err := s.getFolderSize(folder.Path)
-		if err != nil {
-			s.log.Warnf("Tidak dapat hitung ukuran folder %s: %v", folder.Name, err)
-		}
-		totalSize += size
-
-		// Delete the folder
-		err = os.RemoveAll(folder.Path)
-		if err != nil {
-			s.log.Errorf("❌ Gagal menghapus folder %s: %v", folder.Name, err)
-			return fmt.Errorf("gagal menghapus folder %s: %v", folder.Name, err)
-		}
-
-		s.log.Infof("✅ Menghapus folder %s...", folder.Name)
-		deletedCount++
-	}
-
-	// Convert size to MB
-	sizeMB := float64(totalSize) / (1024 * 1024)
-	s.log.Infof("🎉 Berhasil menghapus %d folder (mengosongkan %.2f MB)", deletedCount, sizeMB)
-
-	return nil
-}
-
-// parseFolderDate parses date from folder name (format: 0001-18-11-2025)
+// parseFolderDate - Parse tanggal dari nama folder (0001-18-11-2025)
 func (s *CleanupService) parseFolderDate(folderName string) (time.Time, error) {
 	parts := strings.Split(folderName, "-")
 	if len(parts) != 4 {
-		return time.Time{}, fmt.Errorf("format nama folder tidak valid: %s", folderName)
+		return time.Time{}, fmt.Errorf("format folder tidak valid")
 	}
 
-	// Parts: [0001, 18, 11, 2025]
-	day := parts[1]
-	month := parts[2]
-	year := parts[3]
-
-	// Parse to time
-	dateStr := fmt.Sprintf("%s-%s-%s", year, month, day)
-	date, err := time.Parse("2006-01-02", dateStr)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("gagal parse tanggal %s: %v", dateStr, err)
-	}
-
-	return date, nil
+	// Format: 0001-DD-MM-YYYY -> YYYY-MM-DD
+	dateStr := fmt.Sprintf("%s-%s-%s", parts[3], parts[2], parts[1])
+	return time.Parse("2006-01-02", dateStr)
 }
 
-// countFiles counts the number of files in a directory
-func (s *CleanupService) countFiles(dirPath string) (int, error) {
-	entries, err := os.ReadDir(dirPath)
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			count++
-		}
-	}
-
-	return count, nil
-}
-
-// getFolderSize calculates the total size of a folder
-func (s *CleanupService) getFolderSize(dirPath string) (int64, error) {
-	var size int64
-
-	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+// getFolderStats - Hitung jumlah file dan total size dalam folder
+func (s *CleanupService) getFolderStats(folderPath string) (fileCount int, totalSize int64) {
+	filepath.Walk(folderPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return nil
 		}
 		if !info.IsDir() {
-			size += info.Size()
+			fileCount++
+			totalSize += info.Size()
 		}
 		return nil
 	})
-
-	return size, err
+	return
 }
