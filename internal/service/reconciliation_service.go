@@ -116,15 +116,33 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 		totalRecords += len(vr.ReconResults) + len(vr.SettlementResults)
 	}
 	
+	// Generate duplicate report automatically
+	s.log.Infof("🔍 Generating duplicate report for job %s...", jobID)
+	duplicateReport, err := s.GenerateDuplicateReport(jobID)
+	if err != nil {
+		s.log.Warnf("Failed to generate duplicate report: %v", err)
+		// Don't fail the entire process, just log warning
+	} else {
+		// Export duplicate report to CSV
+		_, exportErr := s.ExportDuplicateReportToCSV(jobID, duplicateReport)
+		if exportErr != nil {
+			s.log.Warnf("Failed to export duplicate report to CSV: %v", exportErr)
+		} else {
+			s.log.Infof("✅ Duplicate report generated: %d unique duplicates, %d total records", 
+				duplicateReport.TotalDuplicates, duplicateReport.TotalRecords)
+		}
+	}
+	
 	// Build result
 	reconResult := &dto.ReconciliationResult{
-		JobID:        jobID,
-		Status:       "completed",
-		Message:      "Rekonsiliasi selesai",
-		ProcessedAt:  time.Now(),
-		TotalRecords: totalRecords,
-		Vendors:      results,
-		DownloadURLs: s.buildDownloadURLsMulti(jobID, vendorFilesMap),
+		JobID:         jobID,
+		Status:        "completed",
+		Message:       "Rekonsiliasi selesai",
+		ProcessedAt:   time.Now(),
+		TotalRecords:  totalRecords,
+		Vendors:       results,
+		DownloadURLs:  s.buildDownloadURLsMulti(jobID, vendorFilesMap),
+		DuplicateReport: duplicateReport,
 	}
 	
 	s.log.Infof("Job %s completed with %d total records", jobID, totalRecords)
@@ -388,6 +406,8 @@ func (s *ReconciliationService) buildDownloadURLsMulti(jobID string, vendorFiles
 			urls[vendor+"_settlement_result"] = fmt.Sprintf("/api/download/%s/%s_settlement_result.csv", jobID, vendor)
 		}
 	}
+	// Add duplicate report URL
+	urls["duplicate_report"] = fmt.Sprintf("/api/download/%s/%s_duplicate_report.csv", jobID, jobID)
 	return urls
 }
 

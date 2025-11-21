@@ -12,13 +12,14 @@ type APIResponse struct {
 
 // ReconciliationResult adalah hasil proses rekonsiliasi
 type ReconciliationResult struct {
-	JobID        string                  `json:"job_id"`
-	Status       string                  `json:"status"` // processing, completed, failed
-	Message      string                  `json:"message"`
-	ProcessedAt  time.Time               `json:"processed_at"`
-	TotalRecords int                     `json:"total_records"`
-	Vendors      []VendorResult          `json:"vendors"`
-	DownloadURLs map[string]string       `json:"download_urls,omitempty"`
+	JobID           string                  `json:"job_id"`
+	Status          string                  `json:"status"` // processing, completed, failed
+	Message         string                  `json:"message"`
+	ProcessedAt     time.Time               `json:"processed_at"`
+	TotalRecords    int                     `json:"total_records"`
+	Vendors         []VendorResult          `json:"vendors"`
+	DownloadURLs    map[string]string       `json:"download_urls,omitempty"`
+	DuplicateReport *DuplicateReport        `json:"duplicate_report,omitempty"`
 }
 
 // VendorResult adalah hasil rekonsiliasi per vendor

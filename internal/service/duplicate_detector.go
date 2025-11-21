@@ -219,10 +219,14 @@ func (dd *DuplicateDetector) DetectSettlementDuplicates(settlePath, vendor strin
 	// Map untuk tracking RRN
 	rrnMap := make(map[string][]dto.DuplicateRecord)
 
-	// Loop through records (NO header)
+	// Loop through records (SKIP header row at index 0)
 	for i, row := range records {
+		if i == 0 {
+			continue // Skip header row
+		}
+		
 		// Validasi jumlah kolom (settlement memiliki lebih banyak kolom)
-		if len(row) < 19 {
+		if len(row) < 18 {
 			continue
 		}
 
