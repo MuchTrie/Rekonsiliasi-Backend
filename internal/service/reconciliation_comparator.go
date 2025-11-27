@@ -65,16 +65,25 @@ func CompareReconRRNs(core []*dto.Data, switching map[string]dto.SwitchingReconc
 	return results
 }
 
+// SettlementComparisonResult holds comparison results with statistics
+type SettlementComparisonResult struct {
+	Results    []dto.SettlementSwitchingResult
+	MatchCount int
+}
+
 // CompareSettlementRRNs membandingkan data settlement menggunakan composite key (RRN + Amount)
 // Matching harus exact: RRN sama DAN Amount sama
-// Mengembalikan hasil perbandingan dengan status: MATCH, ONLY_IN_CORE, atau ONLY_IN_SWITCHING
-func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingSettlementData) []dto.SettlementSwitchingResult {
+// HANYA mengembalikan record yang TIDAK MATCH (sesuai format Ciptami)
+// Return: ONLY_IN_CORE + ONLY_IN_SWITCHING (tanpa record MATCH) + MatchCount
+func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingSettlementData) ([]dto.SettlementSwitchingResult, int) {
 	var results []dto.SettlementSwitchingResult
 	coreKeys := make(map[string]bool)
+	matchCount := 0
 	
-	// Buat hashmap dari data CORE dengan composite key (RRN|Amount)
+	// Buat hashmap dari data CORE dengan composite key (RRN-Amount)
+	// Format key sesuai Ciptami: "RRN-Amount" dengan 4 desimal
 	for _, data := range core {
-		key := data.Key() // Format: "RRN|Amount" (contoh: "1iefp2w46282|20000.00")
+		key := data.Key() // Format: "RRN-Amount" (contoh: "000819948298-10000.0000")
 		if coreKeys[key] {
 			// Key duplikat di data CORE - skip
 			continue
@@ -82,26 +91,14 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 		coreKeys[key] = true
 	}
 	
-	// Loop data switching dan bandingkan dengan CORE menggunakan composite key
+	// Loop data switching dan bandingkan dengan CORE
 	for key, switchData := range switching {
 		if coreKeys[key] {
-			// MATCH - RRN dan Amount sama di kedua sumber
-			results = append(results, dto.SettlementSwitchingResult{
-				RRN:              switchData.RRN,
-				Amount:           switchData.Amount,
-				MatchStatus:      "MATCH",
-				MerchantPAN:      switchData.MerchantPAN,
-				MerchantCriteria: switchData.MerchantCriteria,
-				InvoiceNumber:    switchData.TraceNo,
-				CreatedDate:      switchData.TanggalTrx,
-				CreatedTime:      switchData.JamTrx,
-				ProcessingCode:   switchData.TrxCode,
-				InterchangeFee:   switchData.InterchangeFee,
-				ConvenienceFee:   switchData.ConvenienceFee,
-			})
+			// MATCH - Count tapi tidak di-output (sesuai logic Ciptami)
+			matchCount++
 			delete(coreKeys, key)
 		} else {
-			// ONLY_IN_SWITCHING - Composite key hanya ada di switching
+			// ONLY_IN_SWITCHING - Output record ini
 			results = append(results, dto.SettlementSwitchingResult{
 				RRN:              switchData.RRN,
 				Amount:           switchData.Amount,
@@ -118,7 +115,7 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 		}
 	}
 	
-	// Data yang tersisa di coreKeys = ONLY_IN_CORE
+	// Data yang tersisa di coreKeys = ONLY_IN_CORE - Output semua
 	for _, coreData := range core {
 		key := coreData.Key()
 		if coreKeys[key] {
@@ -132,5 +129,5 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 		}
 	}
 	
-	return results
+	return results, matchCount
 }

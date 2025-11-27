@@ -160,7 +160,8 @@ func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) erro
 		}
 		
 		// Parse baris settlement (1 transaksi = 1 baris panjang)
-		if len(line) > 50 && unicode.IsDigit(rune(line[0])) {
+		// IMPORTANT: Ciptami skip baris < 190 karakter (baris terlalu pendek = invalid/garbage)
+		if len(line) >= 190 && unicode.IsDigit(rune(line[0])) {
 			// Parse menggunakan single-line parser
 			parsed := ParseSettlementDataLineSingleLine(line)
 			if parsed != nil {
@@ -199,87 +200,82 @@ func (fc *FileConverter) ConvertSettlementTxtToCsv(txtPath, csvPath string) erro
 }
 
 // ============================================================================
-// FUNGSI PARSER SETTLEMENT - SINGLE LINE FORMAT
+// FUNGSI PARSER SETTLEMENT - IMPLEMENTASI CIPTAMI
 // ============================================================================
 
-// ParseSettlementDataLineSingleLine melakukan parsing baris settlement yang panjang (single line)
-// Format: 000001 261000 28/10/25 23:29:55 000116137305 928001 INA-D0417303417 ... -770.00
-// Algoritma:
-//   1. Extract Interchange Fee dari akhir (format: -770.00)
-//   2. Extract Convenience Fee sebelumnya (format: 0.00 C)
-//   3. Extract Response Code + Merchant Name (format: 00 MERCHANT NAME)
-//   4. Split sisanya dengan whitespace untuk dapat 14 field
+// ParseSettlementDataLineSingleLine melakukan parsing baris settlement menggunakan logic Ciptami
+// Format: 000001 261000 28/10/25 23:29:55 000116137305 928001 INA-D0417303417 ... 0.00 C -770.00
+// Logic diambil langsung dari program Ciptami (switching_reconcile)
 func ParseSettlementDataLineSingleLine(line string) map[string]string {
-	line = strings.TrimRight(line, " \t")
-	
-	// Step 1: Extract Interchange Fee (kolom terakhir, format: -123.00 atau 123.00)
-	interchangeRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}\s*$`)
-	interchangeMatches := interchangeRegex.FindStringIndex(line)
-	if interchangeMatches == nil {
-		return nil // Tidak valid jika tidak ada Interchange Fee
+	result := make(map[string]string)
+	line = strings.TrimRight(line, "\r\n ")
+
+	// --- STEP 1: Ambil fee dari kanan (karena paling stabil) ---
+	interchangeRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}$`)
+	interchange := interchangeRegex.FindString(line)
+	line = strings.TrimSpace(strings.TrimSuffix(line, interchange))
+	result["Interchange_Fee"] = interchange
+
+	convenienceRegex := regexp.MustCompile(`\d+\.\d{2} C$`)
+	convenience := convenienceRegex.FindString(line)
+	line = strings.TrimSpace(strings.TrimSuffix(line, convenience))
+	result["Convenience_Fee"] = convenience
+
+	// --- STEP 2: Pisahkan bagian depan (tanpa fee) ---
+	fields := strings.Fields(line)
+
+	// Minimal harus punya 15 field untuk aman
+	if len(fields) < 15 {
+		return nil
 	}
-	interchangeFee := strings.TrimSpace(line[interchangeMatches[0]:interchangeMatches[1]])
-	remaining := line[:interchangeMatches[0]]
-	
-	remaining = strings.TrimRight(remaining, " \t")
-	
-	// Step 2: Extract Convenience Fee (kolom kedua dari akhir, format: 0.00 C atau 0.00 D)
-	convenienceRegex := regexp.MustCompile(`[+-]?\d{1,3}(?:,\d{3})*\.\d{2}\s+[DC]\s*$`)
-	convenienceMatches := convenienceRegex.FindStringIndex(remaining)
-	if convenienceMatches == nil {
-		return nil // Tidak valid jika tidak ada Convenience Fee
+
+	// Karena Terminal_ID bisa kosong, kita cek panjang Merchant_PAN
+	// Pola PAN selalu angka panjang 16–19 digit yang diawali dengan '93600831'
+	findPAN := func(start int, fields []string) int {
+		for i := start; i < len(fields); i++ {
+			if strings.HasPrefix(fields[i], "93600831") && len(fields[i]) >= 16 {
+				return i
+			}
+		}
+		return -1
 	}
-	convenienceFee := strings.TrimSpace(remaining[convenienceMatches[0]:convenienceMatches[1]])
-	remaining = remaining[:convenienceMatches[0]]
-	
-	remaining = strings.TrimRight(remaining, " \t")
-	
-	// Step 3: Extract Response Code (2 digit) + Merchant Name (sisanya)
-	// Format: "00            BUANATELESINO SHOP JKT   JAKARTA SELATID"
-	merchantRegex := regexp.MustCompile(`\s+(\d{2})\s+(.+)$`)
-	merchantMatches := merchantRegex.FindStringSubmatch(remaining)
-	
-	merchantName := ""
-	responseCode := ""
-	if len(merchantMatches) >= 3 {
-		responseCode = merchantMatches[1]
-		merchantName = strings.TrimSpace(merchantMatches[2])
-		remaining = remaining[:len(remaining)-len(merchantMatches[0])]
+
+	// Posisi Merchant_PAN kita deteksi otomatis
+	panIdx := findPAN(6, fields)
+	if panIdx == -1 {
+		return nil
 	}
-	
-	// Step 4: Split field sisanya berdasarkan whitespace
-	parts := strings.Fields(remaining)
-	
-	// Validasi: Harus ada minimal 14 field
-	// Format: No Trx_Code Tanggal_Trx Jam_Trx Ref_No Trace_No Terminal_ID Merchant_PAN Acquirer Issuer Customer_PAN Nominal Merchant_Category Merchant_Criteria
-	// 0:No 1:Trx_Code 2:Tanggal_Trx 3:Jam_Trx 4:Ref_No 5:Trace_No 
-	// 6:Terminal_ID 7:Merchant_PAN 8:Acquirer 9:Issuer 10:Customer_PAN 11:Nominal 12:Merchant_Category 13:Merchant_Criteria
-	
-	if len(parts) < 14 {
-		return nil // Field tidak lengkap
+
+	// Terminal_ID bisa kosong → ambil gabungan antara Trace_No dan Merchant_PAN
+	result["No"] = fields[0]
+	result["Trx_Code"] = fields[1]
+	result["Tanggal_Trx"] = fields[2]
+	result["Jam_Trx"] = fields[3]
+	result["Ref_No"] = fields[4]
+	result["Trace_No"] = fields[5]
+
+	if panIdx == 6 {
+		result["Terminal_ID"] = ""
+	} else {
+		result["Terminal_ID"] = fields[6]
 	}
-	
-	// Return map dengan key = nama field, value = nilai field
-	return map[string]string{
-		"No":                     parts[0],   // Nomor urut transaksi
-		"Trx_Code":               parts[1],   // Kode transaksi (261000 atau 266000)
-		"Tanggal_Trx":            parts[2],   // Tanggal transaksi (DD/MM/YY)
-		"Jam_Trx":                parts[3],   // Jam transaksi (HH:MM:SS)
-		"Ref_No":                 parts[4],   // RRN (Reference Number)
-		"Trace_No":               parts[5],   // Trace Number
-		"Terminal_ID":            parts[6],   // Terminal ID
-		"Merchant_PAN":           parts[7],   // Merchant PAN
-		"Acquirer":               parts[8],   // Acquirer ID
-		"Issuer":                 parts[9],   // Issuer ID
-		"Customer_PAN":           parts[10],  // Customer PAN
-		"Nominal":                parts[11],  // Amount transaksi
-		"Merchant_Category":      parts[12],  // Kategori merchant (5999, 7372, dll)
-		"Merchant_Criteria":      parts[13],  // Kriteria merchant (UKE, UME, dll)
-		"Response_Code":          responseCode,    // Response code (00 = success)
-		"Merchant_Name_Location": merchantName,    // Nama dan lokasi merchant
-		"Convenience_Fee":        convenienceFee,  // Biaya convenience
-		"Interchange_Fee":        interchangeFee,  // Biaya interchange
+
+	result["Merchant_PAN"] = fields[panIdx]
+	result["Acquirer"] = fields[panIdx+1]
+	result["Issuer"] = fields[panIdx+2]
+	result["Customer_PAN"] = fields[panIdx+3]
+	result["Nominal"] = fields[panIdx+4]
+	result["Merchant_Category"] = fields[panIdx+5]
+	result["Merchant_Criteria"] = fields[panIdx+6]
+	result["Response_Code"] = fields[panIdx+7]
+
+	// --- STEP 3: Merchant name & location ---
+	merchantStart := panIdx + 8
+	if merchantStart < len(fields) {
+		result["Merchant_Name_Location"] = strings.Join(fields[merchantStart:], " ")
 	}
+
+	return result
 }
 
 // ============================================================================

@@ -18,8 +18,9 @@ type Data struct {
 }
 
 // Key returns composite key for settlement comparison (RRN + Amount)
+// Format: RRN-Amount with 4 decimal precision (sesuai format Ciptami)
 func (d *Data) Key() string {
-	return fmt.Sprintf("%s|%.2f", d.RRN, d.Amount)
+	return fmt.Sprintf("%s-%.4f", d.RRN, d.Amount)
 }
 
 // SwitchingReconciliationData represents switching reconciliation data
@@ -35,8 +36,9 @@ type SwitchingReconciliationData struct {
 }
 
 // Key returns composite key for settlement comparison (RRN + Amount)
+// Format: RRN-Amount with 4 decimal precision (sesuai format Ciptami)
 func (s SwitchingReconciliationData) Key() string {
-	return fmt.Sprintf("%s|%.2f", s.RRN, s.Amount)
+	return fmt.Sprintf("%s-%.4f", s.RRN, s.Amount)
 }
 
 // SwitchingSettlementData represents switching settlement data

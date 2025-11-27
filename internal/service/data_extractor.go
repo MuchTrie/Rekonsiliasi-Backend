@@ -72,6 +72,12 @@ func (de *DataExtractor) ExtractSingleCoreData(path string) ([]*dto.Data, error)
 			continue // Skip jika RRN kosong
 		}
 		
+		// PENTING: Skip record dengan status != "SUCCESS" (sesuai logic Ciptami)
+		status := strings.TrimSpace(row[1])
+		if strings.ToUpper(status) != "SUCCESS" {
+			continue // Skip jika status bukan SUCCESS
+		}
+		
 		// Parse Amount dari kolom 15 (index 15)
 		amount := AmountConverter(row[15], de.log)
 		

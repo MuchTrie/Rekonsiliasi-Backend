@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"os"
@@ -110,10 +111,11 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 	
 	wg.Wait()
 	
-	// Calculate totals
+	// Calculate totals - Total Records = Sum of all Settlement Total (Match + Mismatch)
 	totalRecords := 0
 	for _, vr := range results {
-		totalRecords += len(vr.ReconResults) + len(vr.SettlementResults)
+		// Total records = total settlement yang diproses (match + mismatch)
+		totalRecords += vr.SettlementMatchCount + vr.SettlementMismatchCount
 	}
 	
 	// Generate duplicate report automatically
@@ -301,11 +303,17 @@ func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobD
 		
 		s.log.Infof("Loaded total %d settlement records for vendor %s", len(allSettlementData), vf.Vendor)
 		
-		// Compare with CORE
-		oldResults := CompareSettlementRRNs(coreData, allSettlementData)
+		// Compare with CORE (sesuai logic Ciptami: hanya return UNMATCHED + match count)
+		oldResults, matchCount := CompareSettlementRRNs(coreData, allSettlementData)
 		result.SettlementResults = s.convertSettlementResults(oldResults)
-		result.SettlementMatchCount = s.countMatchesSettlement(result.SettlementResults)
-		result.SettlementMismatchCount = len(result.SettlementResults) - result.SettlementMatchCount
+		
+		// Set match count dari hasil comparison
+		result.SettlementMatchCount = matchCount
+		
+		// Hitung mismatch count
+		onlyInCoreCount := s.countOnlyInCore(result.SettlementResults)
+		onlyInSwitchingCount := s.countOnlyInSwitching(result.SettlementResults)
+		result.SettlementMismatchCount = onlyInCoreCount + onlyInSwitchingCount
 		
 		// Generate CSV hasil settlement
 		resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_result.csv", vf.Vendor))
@@ -313,6 +321,19 @@ func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobD
 			s.log.Errorf("Failed to write settlement result CSV: %v", err)
 		} else {
 			s.log.Infof("Generated settlement result CSV: %s", resultCSVPath)
+		}
+		
+		// Save metadata JSON untuk settlement
+		metadataPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_metadata.json", vf.Vendor))
+		if err := s.saveMetadata(metadataPath, map[string]int{
+			"match_count":    result.SettlementMatchCount,
+			"mismatch_count": result.SettlementMismatchCount,
+			"only_in_core":   onlyInCoreCount,
+			"only_in_switching": onlyInSwitchingCount,
+		}); err != nil {
+			s.log.Errorf("Failed to write settlement metadata: %v", err)
+		} else {
+			s.log.Infof("Generated settlement metadata: %s", metadataPath)
 		}
 	}
 	
@@ -365,7 +386,7 @@ func (s *ReconciliationService) convertSettlementResults(old []dto.SettlementSwi
 			MatchStatus:      r.MatchStatus,
 			Source:           source,
 			MerchantPAN:      r.MerchantPAN,
-			SettlementAmount: "",
+			SettlementAmount: fmt.Sprintf("%.2f", r.Amount),
 			InterchangeFee:   r.InterchangeFee,
 			ConvenienceFee:   r.ConvenienceFee,
 		}
@@ -389,6 +410,28 @@ func (s *ReconciliationService) countMatchesSettlement(results []dto.SettlementD
 	count := 0
 	for _, r := range results {
 		if r.MatchStatus == "MATCH" {
+			count++
+		}
+	}
+	return count
+}
+
+// countOnlyInCore menghitung jumlah record ONLY_IN_CORE
+func (s *ReconciliationService) countOnlyInCore(results []dto.SettlementData) int {
+	count := 0
+	for _, r := range results {
+		if r.MatchStatus == "ONLY_IN_CORE" {
+			count++
+		}
+	}
+	return count
+}
+
+// countOnlyInSwitching menghitung jumlah record ONLY_IN_SWITCHING
+func (s *ReconciliationService) countOnlyInSwitching(results []dto.SettlementData) int {
+	count := 0
+	for _, r := range results {
+		if r.MatchStatus == "ONLY_IN_SWITCHING" {
 			count++
 		}
 	}
@@ -494,13 +537,25 @@ func (s *ReconciliationService) GetResultData(jobID, vendor, resultType string) 
 	}
 	
 	// Parse based on result type
+	var result interface{}
 	if resultType == "recon" {
-		return s.parseReconResults(records)
+		result, err = s.parseReconResults(records)
 	} else if resultType == "settlement" {
-		return s.parseSettlementResults(records)
+		result, err = s.parseSettlementResults(records)
+		if err == nil {
+			// Load metadata for settlement
+			metadataPath := filepath.Join(s.resultsDir, jobID, fmt.Sprintf("%s_settlement_metadata.json", vendor))
+			metadata, metaErr := s.loadMetadata(metadataPath)
+			if metaErr == nil {
+				resultMap := result.(map[string]interface{})
+				resultMap["metadata"] = metadata
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("invalid result type: %s", resultType)
 	}
 	
-	return nil, fmt.Errorf("invalid result type: %s", resultType)
+	return result, err
 }
 
 // parseReconResults parses reconciliation result CSV
@@ -546,7 +601,7 @@ func (s *ReconciliationService) parseReconResults(records [][]string) ([]map[str
 }
 
 // parseSettlementResults parses settlement result CSV
-func (s *ReconciliationService) parseSettlementResults(records [][]string) ([]map[string]interface{}, error) {
+func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[string]interface{}, error) {
 	if len(records) < 2 {
 		return nil, fmt.Errorf("no data rows in CSV")
 	}
@@ -582,7 +637,7 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) ([]ma
 		
 		results = append(results, map[string]interface{}{
 			"rrn":               row[0],
-			"amount":            amount,
+			"settlement_amount": fmt.Sprintf("%.2f", amount),
 			"reff":              row[2],
 			"status":            row[3],
 			"match_status":      row[4],
@@ -593,7 +648,16 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) ([]ma
 		})
 	}
 	
-	return results, nil
+	// Return dengan metadata placeholder (akan di-override oleh loadMetadata)
+	return map[string]interface{}{
+		"data": results,
+		"metadata": map[string]int{
+			"match_count":    0,
+			"mismatch_count": 0,
+			"only_in_core":   0,
+			"only_in_switching": 0,
+		},
+	}, nil
 }
 
 // ConvertSettlementFile delegates to SettlementConverter
@@ -730,3 +794,33 @@ func extractVendorFromFilename(filename string) string {
 func (s *ReconciliationService) GetResultsDir() string {
 	return s.resultsDir
 }
+
+// saveMetadata saves metadata to JSON file
+func (s *ReconciliationService) saveMetadata(filePath string, metadata map[string]int) error {
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+	
+	return nil
+}
+
+// loadMetadata loads metadata from JSON file
+func (s *ReconciliationService) loadMetadata(filePath string) (map[string]int, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata file: %w", err)
+	}
+	
+	var metadata map[string]int
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal metadata: %w", err)
+	}
+	
+	return metadata, nil
+}
+
