@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24 AS builder
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ COPY . .
 RUN go build -o server ./cmd/server/main.go
 
 # ---- Runtime stage ----
-FROM alpine:latest
+FROM alpine:3.22.2
 
 WORKDIR /app
 
@@ -21,4 +21,4 @@ COPY --from=builder /app/server ./server
 
 EXPOSE 8080
 
-CMD ["/app/server"]    
+CMD ["/app/server"]
