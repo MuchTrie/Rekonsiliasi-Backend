@@ -7,6 +7,9 @@ import (
 
 // ReconciliationRequest adalah request untuk proses rekonsiliasi
 type ReconciliationRequest struct {
+	// Optional: Job ID untuk re-process/overwrite hasil sebelumnya
+	JobID string `form:"job_id"`
+	
 	// Multiple CORE files - sistem akan auto-detect vendor dari nama file
 	CoreFiles []*multipart.FileHeader `form:"core_files" binding:"required"`
 	

@@ -63,8 +63,8 @@ func NewReconciliationService(log *logrus.Logger, uploadDir, resultsDir string) 
 
 // ProcessReconciliation adalah fungsi utama yang memproses rekonsiliasi dari file upload
 // Flow:
-//   1. Generate job ID (XXXX-DD-MM-YYYY)
-//   2. Buat folder job
+//   1. Auto-detect job ID untuk hari ini atau buat baru
+//   2. Buat/bersihkan folder job
 //   3. Auto-detect vendor dari nama file CORE
 //   4. Save file upload
 //   5. Extract data CORE & Switching
@@ -72,17 +72,43 @@ func NewReconciliationService(log *logrus.Logger, uploadDir, resultsDir string) 
 //   7. Write hasil ke CSV
 //   8. Return result dengan download URLs
 func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationRequest) (*dto.ReconciliationResult, error) {
-	// Step 1: Generate job ID dengan format XXXX-DD-MM-YYYY
+	// Step 1: Auto-detect atau gunakan job ID yang ada
+	var jobID string
 	now := time.Now()
-	jobID := s.generateJobID(now)
+	
+	if req.JobID != "" {
+		// Mode manual: Gunakan job ID yang sudah ada (re-process mode)
+		jobID = req.JobID
+		s.log.Infof("Re-processing job rekonsiliasi %s (overwrite mode)", jobID)
+	} else {
+		// Mode auto: Cek apakah sudah ada job untuk tanggal hari ini
+		existingJobID := s.findTodayJobID(now)
+		if existingJobID != "" {
+			// Sudah ada job untuk hari ini, gunakan job tersebut (auto-replace)
+			jobID = existingJobID
+			s.log.Infof("Found existing job for today: %s, will overwrite", jobID)
+		} else {
+			// Belum ada job untuk hari ini, buat baru
+			jobID = s.generateJobID(now)
+			s.log.Infof("Creating new job: %s", jobID)
+		}
+	}
+	
 	jobDir := filepath.Join(s.resultsDir, jobID)
 	
-	// Step 2: Buat direktori untuk job ini
+	// Step 2: Buat atau bersihkan direktori untuk job ini
+	if _, err := os.Stat(jobDir); err == nil {
+		// Folder sudah ada, hapus isinya untuk overwrite
+		s.log.Infof("Folder job %s sudah ada, membersihkan isi folder...", jobID)
+		if err := os.RemoveAll(jobDir); err != nil {
+			return nil, fmt.Errorf("gagal menghapus folder job lama: %w", err)
+		}
+	}
+	
+	// Buat folder baru
 	if err := os.MkdirAll(jobDir, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("gagal membuat direktori job: %w", err)
 	}
-	
-	s.log.Infof("Memproses job rekonsiliasi %s", jobID)
 	
 	// Step 3: Dapatkan map vendor files (auto-detect dari nama file CORE)
 	vendorFilesMap := req.GetVendorFilesMap()
@@ -195,6 +221,34 @@ func (s *ReconciliationService) getLastJobID() int {
 	return maxID
 }
 
+// findTodayJobID mencari job ID yang sudah ada untuk tanggal hari ini
+// Format job ID: XXXX-DD-MM-YYYY
+// Return: job ID jika ditemukan, string kosong jika tidak ada
+func (s *ReconciliationService) findTodayJobID(t time.Time) string {
+	entries, err := os.ReadDir(s.resultsDir)
+	if err != nil {
+		return ""
+	}
+	
+	// Format tanggal hari ini: DD-MM-YYYY
+	todayDateStr := t.Format("02-01-2006")
+	pattern := regexp.MustCompile(`^(\d{4})-` + regexp.QuoteMeta(todayDateStr) + `$`)
+	
+	// Cari folder dengan tanggal hari ini
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		
+		if pattern.MatchString(entry.Name()) {
+			s.log.Infof("Found existing job for today: %s", entry.Name())
+			return entry.Name()
+		}
+	}
+	
+	return ""
+}
+
 // processVendorMultiFile memproses satu vendor dengan multi-file support
 func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobDir string) dto.VendorResult {
 	result := dto.VendorResult{
@@ -261,7 +315,15 @@ func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobD
 		result.ReconMatchCount = s.countMatches(result.ReconResults)
 		result.ReconMismatchCount = len(result.ReconResults) - result.ReconMatchCount
 		
-		// Generate CSV hasil rekonsiliasi
+		// Generate Excel hasil rekonsiliasi dengan sheets terpisah
+		resultExcelPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_result.xlsx", vf.Vendor))
+		if err := WriteReconResultExcel(resultExcelPath, oldResults); err != nil {
+			s.log.Errorf("Failed to write recon result Excel: %v", err)
+		} else {
+			s.log.Infof("Generated recon result Excel: %s", resultExcelPath)
+		}
+		
+		// Tetap generate CSV untuk backward compatibility
 		resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_recon_result.csv", vf.Vendor))
 		if err := WriteReconResultCSV(resultCSVPath, oldResults); err != nil {
 			s.log.Errorf("Failed to write recon result CSV: %v", err)
@@ -315,7 +377,15 @@ func (s *ReconciliationService) processVendorMultiFile(vf *dto.VendorFiles, jobD
 		onlyInSwitchingCount := s.countOnlyInSwitching(result.SettlementResults)
 		result.SettlementMismatchCount = onlyInCoreCount + onlyInSwitchingCount
 		
-		// Generate CSV hasil settlement
+		// Generate Excel hasil settlement dengan sheets terpisah
+		resultExcelPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_result.xlsx", vf.Vendor))
+		if err := WriteSettlementResultExcel(resultExcelPath, oldResults); err != nil {
+			s.log.Errorf("Failed to write settlement result Excel: %v", err)
+		} else {
+			s.log.Infof("Generated settlement result Excel: %s", resultExcelPath)
+		}
+		
+		// Tetap generate CSV untuk backward compatibility
 		resultCSVPath := filepath.Join(jobDir, fmt.Sprintf("%s_settlement_result.csv", vf.Vendor))
 		if err := WriteSettlementResultCSV(resultCSVPath, oldResults); err != nil {
 			s.log.Errorf("Failed to write settlement result CSV: %v", err)
@@ -358,6 +428,7 @@ func (s *ReconciliationService) convertReconResults(old []dto.ReconciliationSwit
 			MatchStatus:      r.MatchStatus,
 			Source:           source,
 			MerchantPAN:      r.MerchantPAN,
+			MerchantName:     r.MerchantName,
 			MerchantCriteria: r.MerchantCriteria,
 			InvoiceNumber:    r.InvoiceNumber,
 			CreatedDate:      r.CreatedDate,
@@ -386,6 +457,7 @@ func (s *ReconciliationService) convertSettlementResults(old []dto.SettlementSwi
 			MatchStatus:      r.MatchStatus,
 			Source:           source,
 			MerchantPAN:      r.MerchantPAN,
+			MerchantName:     r.MerchantName,
 			SettlementAmount: fmt.Sprintf("%.2f", r.Amount),
 			InterchangeFee:   r.InterchangeFee,
 			ConvenienceFee:   r.ConvenienceFee,
@@ -559,49 +631,8 @@ func (s *ReconciliationService) GetResultData(jobID, vendor, resultType string) 
 }
 
 // parseReconResults parses reconciliation result CSV
+// CSV Format: No, RRN, Reff, Status, Match Status, Merchant PAN, Merchant Name, Merchant Criteria, Invoice Number, Created Date, Created Time, Processing Code
 func (s *ReconciliationService) parseReconResults(records [][]string) ([]map[string]interface{}, error) {
-	if len(records) < 2 {
-		return nil, fmt.Errorf("no data rows in CSV")
-	}
-	
-	// Skip header row
-	var results []map[string]interface{}
-	
-	for i := 1; i < len(records); i++ {
-		row := records[i]
-		if len(row) < 10 {
-			continue
-		}
-		
-		// Add source field based on match_status
-		source := "BOTH"
-		matchStatus := row[3]
-		if matchStatus == "ONLY_IN_CORE" {
-			source = "CORE"
-		} else if matchStatus == "ONLY_IN_SWITCHING" {
-			source = "SWITCHING"
-		}
-		
-		results = append(results, map[string]interface{}{
-			"rrn":               row[0],
-			"reff":              row[1],
-			"status":            row[2],
-			"match_status":      row[3],
-			"source":            source,
-			"merchant_pan":      row[4],
-			"merchant_criteria": row[5],
-			"invoice_number":    row[6],
-			"created_date":      row[7],
-			"created_time":      row[8],
-			"process_code":      row[9],
-		})
-	}
-	
-	return results, nil
-}
-
-// parseSettlementResults parses settlement result CSV
-func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[string]interface{}, error) {
 	if len(records) < 2 {
 		return nil, fmt.Errorf("no data rows in CSV")
 	}
@@ -615,10 +646,54 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[
 			continue
 		}
 		
-		// Parse amount (column index 1)
+		// Add source field based on match_status
+		source := "BOTH"
+		matchStatus := row[4]
+		if matchStatus == "ONLY_IN_CORE" {
+			source = "CORE"
+		} else if matchStatus == "ONLY_IN_SWITCHING" {
+			source = "SWITCHING"
+		}
+		
+		results = append(results, map[string]interface{}{
+			"rrn":               row[1],
+			"reff":              row[2],
+			"status":            row[3],
+			"match_status":      row[4],
+			"source":            source,
+			"merchant_pan":      row[5],
+			"merchant_name":     row[6],
+			"merchant_criteria": row[7],
+			"invoice_number":    row[8],
+			"created_date":      row[9],
+			"created_time":      row[10],
+			"process_code":      row[11],
+		})
+	}
+	
+	return results, nil
+}
+
+// parseSettlementResults parses settlement result CSV
+// CSV Format: No, RRN, Amount, Reff, Status, Match Status, Merchant PAN, Merchant Name, Merchant Criteria, Invoice Number, Created Date, Created Time, Processing Code, Interchange Fee, Convenience Fee
+func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[string]interface{}, error) {
+	if len(records) < 2 {
+		return nil, fmt.Errorf("no data rows in CSV")
+	}
+	
+	// Skip header row
+	var results []map[string]interface{}
+	
+	for i := 1; i < len(records); i++ {
+		row := records[i]
+		if len(row) < 15 {
+			continue
+		}
+		
+		// Parse amount (column index 2, after No column)
 		var amount float64
-		if row[1] != "" {
-			parsedAmount, err := strconv.ParseFloat(row[1], 64)
+		if row[2] != "" {
+			parsedAmount, err := strconv.ParseFloat(row[2], 64)
 			if err == nil {
 				amount = parsedAmount
 			}
@@ -626,7 +701,7 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[
 		
 		// Add source field based on match_status
 		source := "BOTH"
-		matchStatus := row[4]
+		matchStatus := row[5]
 		if matchStatus == "MATCH" {
 			source = "BOTH"
 		} else if matchStatus == "ONLY_IN_CORE" {
@@ -636,15 +711,16 @@ func (s *ReconciliationService) parseSettlementResults(records [][]string) (map[
 		}
 		
 		results = append(results, map[string]interface{}{
-			"rrn":               row[0],
+			"rrn":               row[1],
 			"settlement_amount": fmt.Sprintf("%.2f", amount),
-			"reff":              row[2],
-			"status":            row[3],
-			"match_status":      row[4],
+			"reff":              row[3],
+			"status":            row[4],
+			"match_status":      row[5],
 			"source":            source,
-			"merchant_pan":      row[5],
-			"interchange_fee":   row[11],
-			"convenience_fee":   row[12],
+			"merchant_pan":      row[6],
+			"merchant_name":     row[7],
+			"interchange_fee":   row[13],
+			"convenience_fee":   row[14],
 		})
 	}
 	

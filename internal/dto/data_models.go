@@ -28,6 +28,7 @@ type SwitchingReconciliationData struct {
 	RRN            string
 	Amount         float64
 	MerchantPAN    string
+	MerchantName   string
 	Criteria       string
 	InvoiceNumber  string
 	CreatedDate    string
@@ -74,6 +75,7 @@ type ReconciliationSwitchingResult struct {
 	Status           string `csv:"status"`
 	MatchStatus      string `csv:"match_status"`
 	MerchantPAN      string `csv:"merchant_pan"`
+	MerchantName     string `csv:"merchant_name"`
 	MerchantCriteria string `csv:"merchant_criteria"`
 	InvoiceNumber    string `csv:"invoice_number"`
 	CreatedDate      string `csv:"created_date"`
@@ -89,6 +91,7 @@ type SettlementSwitchingResult struct {
 	Status           string  `csv:"status"`
 	MatchStatus      string  `csv:"match_status"`
 	MerchantPAN      string  `csv:"merchant_pan"`
+	MerchantName     string  `csv:"merchant_name"`
 	MerchantCriteria string  `csv:"merchant_criteria"`
 	InvoiceNumber    string  `csv:"invoice_number"`
 	CreatedDate      string  `csv:"created_date"`

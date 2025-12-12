@@ -159,12 +159,23 @@ func (de *DataExtractor) ExtractReconciliationDataNew(file *os.File) map[string]
 		// Contoh: 000002000000 = 20000.00
 		amount := AmountConverter(row[7], de.log)
 		
+		// Extract merchant PAN dan criteria
+		merchantPAN := strings.TrimSpace(row[3])
+		criteria := strings.TrimSpace(row[11])
+		
+		// Merchant name: gunakan criteria jika ada, fallback ke PAN
+		merchantName := criteria
+		if merchantName == "" {
+			merchantName = merchantPAN
+		}
+		
 		// Buat struct SwitchingReconciliationData
 		result[rrn] = dto.SwitchingReconciliationData{
 			RRN:            rrn,
 			Amount:         amount,
-			MerchantPAN:    strings.TrimSpace(row[3]),
-			Criteria:       strings.TrimSpace(row[11]),
+			MerchantPAN:    merchantPAN,
+			MerchantName:   merchantName,
+			Criteria:       criteria,
 			InvoiceNumber:  strings.TrimSpace(row[2]),  // Trace Number
 			CreatedDate:    strings.TrimSpace(row[4]),
 			CreatedTime:    strings.TrimSpace(row[5]),
@@ -215,13 +226,28 @@ func (de *DataExtractor) ExtractSettlementDataFromCSV(file *os.File) map[string]
 		// Convert Amount dari string ke float64
 		amount := AmountConverter(row[11], de.log) // Nominal (column 11)
 		
+		// Extract merchant info
+		merchantPAN := strings.TrimSpace(row[7])      // Merchant_PAN (column 7)
+		merchantName := strings.TrimSpace(row[15])     // Merchant_Name_Location (column 15)
+		merchantCriteria := strings.TrimSpace(row[13]) // Merchant_Criteria (column 13)
+		
+		// Jika merchant name kosong, gunakan criteria atau PAN
+		if merchantName == "" {
+			if merchantCriteria != "" {
+				merchantName = merchantCriteria
+			} else {
+				merchantName = merchantPAN
+			}
+		}
+		
 		// Buat struct SettlementData
 		settlementData := dto.SwitchingSettlementData{
 			SwitchingReconciliationData: dto.SwitchingReconciliationData{
 				RRN:            rrn,
 				Amount:         amount,
-				MerchantPAN:    strings.TrimSpace(row[7]),  // Merchant_PAN (column 7)
-				Criteria:       strings.TrimSpace(row[13]), // Merchant_Criteria (column 13)
+				MerchantPAN:    merchantPAN,
+				MerchantName:   merchantName,
+				Criteria:       merchantCriteria,
 				InvoiceNumber:  strings.TrimSpace(row[5]),  // Trace_No (column 5)
 				CreatedDate:    strings.TrimSpace(row[2]),  // Tanggal_Trx (column 2)
 				CreatedTime:    strings.TrimSpace(row[3]),  // Jam_Trx (column 3)
@@ -231,7 +257,7 @@ func (de *DataExtractor) ExtractSettlementDataFromCSV(file *os.File) map[string]
 			TanggalTrx:       strings.TrimSpace(row[2]),  // Tanggal_Trx
 			JamTrx:           strings.TrimSpace(row[3]),  // Jam_Trx
 			TrxCode:          strings.TrimSpace(row[1]),  // Trx_Code
-			MerchantCriteria: strings.TrimSpace(row[13]), // Merchant_Criteria
+			MerchantCriteria: merchantCriteria,           // Merchant_Criteria
 			ConvenienceFee:   strings.TrimSpace(row[16]), // Convenience_Fee (column 16)
 			InterchangeFee:   strings.TrimSpace(row[17]), // Interchange_Fee (column 17)
 		}

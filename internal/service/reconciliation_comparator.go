@@ -30,6 +30,7 @@ func CompareReconRRNs(core []*dto.Data, switching map[string]dto.SwitchingReconc
 				Status:           coreData.Status,
 				MatchStatus:      "MATCH",
 				MerchantPAN:      switchData.MerchantPAN,
+				MerchantName:     switchData.MerchantName,
 				MerchantCriteria: switchData.Criteria,
 				InvoiceNumber:    switchData.InvoiceNumber,
 				CreatedDate:      switchData.CreatedDate,
@@ -43,6 +44,7 @@ func CompareReconRRNs(core []*dto.Data, switching map[string]dto.SwitchingReconc
 				RRN:              rrn,
 				MatchStatus:      "ONLY_IN_SWITCHING",
 				MerchantPAN:      switchData.MerchantPAN,
+				MerchantName:     switchData.MerchantName,
 				MerchantCriteria: switchData.Criteria,
 				InvoiceNumber:    switchData.InvoiceNumber,
 				CreatedDate:      switchData.CreatedDate,
@@ -73,30 +75,45 @@ type SettlementComparisonResult struct {
 
 // CompareSettlementRRNs membandingkan data settlement menggunakan composite key (RRN + Amount)
 // Matching harus exact: RRN sama DAN Amount sama
-// HANYA mengembalikan record yang TIDAK MATCH (sesuai format Ciptami)
-// Return: ONLY_IN_CORE + ONLY_IN_SWITCHING (tanpa record MATCH) + MatchCount
+// Return: ALL records (MATCH + ONLY_IN_CORE + ONLY_IN_SWITCHING) + MatchCount
 func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingSettlementData) ([]dto.SettlementSwitchingResult, int) {
 	var results []dto.SettlementSwitchingResult
-	coreKeys := make(map[string]bool)
+	coreMap := make(map[string]*dto.Data)
 	matchCount := 0
 	
 	// Buat hashmap dari data CORE dengan composite key (RRN-Amount)
 	// Format key sesuai Ciptami: "RRN-Amount" dengan 4 desimal
 	for _, data := range core {
 		key := data.Key() // Format: "RRN-Amount" (contoh: "000819948298-10000.0000")
-		if coreKeys[key] {
+		if coreMap[key] != nil {
 			// Key duplikat di data CORE - skip
 			continue
 		}
-		coreKeys[key] = true
+		coreMap[key] = data
 	}
 	
 	// Loop data switching dan bandingkan dengan CORE
 	for key, switchData := range switching {
-		if coreKeys[key] {
-			// MATCH - Count tapi tidak di-output (sesuai logic Ciptami)
+		if coreData, exists := coreMap[key]; exists {
+			// MATCH - Include in results with MATCH status
 			matchCount++
-			delete(coreKeys, key)
+			results = append(results, dto.SettlementSwitchingResult{
+				RRN:              switchData.RRN,
+				Amount:           switchData.Amount,
+				Reff:             coreData.Reff,
+				Status:           coreData.Status,
+				MatchStatus:      "MATCH",
+				MerchantPAN:      switchData.MerchantPAN,
+				MerchantName:     switchData.MerchantName,
+				MerchantCriteria: switchData.MerchantCriteria,
+				InvoiceNumber:    switchData.TraceNo,
+				CreatedDate:      switchData.TanggalTrx,
+				CreatedTime:      switchData.JamTrx,
+				ProcessingCode:   switchData.TrxCode,
+				InterchangeFee:   switchData.InterchangeFee,
+				ConvenienceFee:   switchData.ConvenienceFee,
+			})
+			delete(coreMap, key)
 		} else {
 			// ONLY_IN_SWITCHING - Output record ini
 			results = append(results, dto.SettlementSwitchingResult{
@@ -104,6 +121,7 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 				Amount:           switchData.Amount,
 				MatchStatus:      "ONLY_IN_SWITCHING",
 				MerchantPAN:      switchData.MerchantPAN,
+				MerchantName:     switchData.MerchantName,
 				MerchantCriteria: switchData.MerchantCriteria,
 				InvoiceNumber:    switchData.TraceNo,
 				CreatedDate:      switchData.TanggalTrx,
@@ -115,18 +133,15 @@ func CompareSettlementRRNs(core []*dto.Data, switching map[string]dto.SwitchingS
 		}
 	}
 	
-	// Data yang tersisa di coreKeys = ONLY_IN_CORE - Output semua
-	for _, coreData := range core {
-		key := coreData.Key()
-		if coreKeys[key] {
-			results = append(results, dto.SettlementSwitchingResult{
-				RRN:         coreData.RRN,
-				Amount:      coreData.Amount,
-				Reff:        coreData.Reff,
-				Status:      coreData.Status,
-				MatchStatus: "ONLY_IN_CORE",
-			})
-		}
+	// Data yang tersisa di coreMap = ONLY_IN_CORE - Output semua
+	for _, coreData := range coreMap {
+		results = append(results, dto.SettlementSwitchingResult{
+			RRN:         coreData.RRN,
+			Amount:      coreData.Amount,
+			Reff:        coreData.Reff,
+			Status:      coreData.Status,
+			MatchStatus: "ONLY_IN_CORE",
+		})
 	}
 	
 	return results, matchCount

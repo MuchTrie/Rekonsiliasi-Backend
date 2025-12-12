@@ -39,6 +39,7 @@ type ReconciliationData struct {
 	Reff             string `json:"reff"`
 	Status           string `json:"status"`
 	MerchantPAN      string `json:"merchant_pan"`
+	MerchantName     string `json:"merchant_name"`
 	MerchantCriteria string `json:"merchant_criteria"`
 	InvoiceNumber    string `json:"invoice_number"`
 	CreatedDate      string `json:"created_date"`
@@ -54,6 +55,7 @@ type SettlementData struct {
 	Reff             string `json:"reff"`
 	Status           string `json:"status"`
 	MerchantPAN      string `json:"merchant_pan"`
+	MerchantName     string `json:"merchant_name"`
 	SettlementAmount string `json:"settlement_amount"`
 	InterchangeFee   string `json:"interchange_fee"`
 	ConvenienceFee   string `json:"convenience_fee"`

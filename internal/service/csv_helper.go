@@ -81,8 +81,8 @@ func WriteReconResultCSV(path string, results []dto.ReconciliationSwitchingResul
 	
 	// Tulis header CSV
 	header := []string{
-		"RRN", "Reff", "Status", "Match Status", 
-		"Merchant PAN", "Merchant Criteria", "Invoice Number",
+		"No", "RRN", "Reff", "Status", "Match Status", 
+		"Merchant PAN", "Merchant Name", "Merchant Criteria", "Invoice Number",
 		"Created Date", "Created Time", "Processing Code",
 	}
 	if err := writer.Write(header); err != nil {
@@ -90,13 +90,15 @@ func WriteReconResultCSV(path string, results []dto.ReconciliationSwitchingResul
 	}
 	
 	// Tulis data row by row
-	for _, r := range results {
+	for i, r := range results {
 		row := []string{
+			fmt.Sprintf("%d", i+1), // Nomor urut
 			r.RRN,
 			r.Reff,
 			r.Status,
 			r.MatchStatus,
 			r.MerchantPAN,
+			r.MerchantName,
 			r.MerchantCriteria,
 			r.InvoiceNumber,
 			r.CreatedDate,
@@ -125,8 +127,8 @@ func WriteSettlementResultCSV(path string, results []dto.SettlementSwitchingResu
 	
 	// Tulis header CSV
 	header := []string{
-		"RRN", "Amount", "Reff", "Status", "Match Status",
-		"Merchant PAN", "Merchant Criteria", "Invoice Number",
+		"No", "RRN", "Amount", "Reff", "Status", "Match Status",
+		"Merchant PAN", "Merchant Name", "Merchant Criteria", "Invoice Number",
 		"Created Date", "Created Time", "Processing Code",
 		"Interchange Fee", "Convenience Fee",
 	}
@@ -135,14 +137,16 @@ func WriteSettlementResultCSV(path string, results []dto.SettlementSwitchingResu
 	}
 	
 	// Tulis data row by row
-	for _, r := range results {
+	for i, r := range results {
 		row := []string{
+			fmt.Sprintf("%d", i+1), // Nomor urut
 			r.RRN,
 			fmt.Sprintf("%.2f", r.Amount), // Format amount dengan 2 desimal
 			r.Reff,
 			r.Status,
 			r.MatchStatus,
 			r.MerchantPAN,
+			r.MerchantName,
 			r.MerchantCriteria,
 			r.InvoiceNumber,
 			r.CreatedDate,

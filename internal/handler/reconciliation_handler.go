@@ -84,8 +84,12 @@ func (h *ReconciliationHandler) ProcessReconciliation(c *gin.Context) {
 	
 	h.log.Infof("Received %d core file(s)", len(coreFiles))
 	
+	// Get optional job_id parameter for re-process
+	jobID := c.PostForm("job_id")
+	
 	// Build request
 	req := &dto.ReconciliationRequest{
+		JobID:     jobID,
 		CoreFiles: coreFiles,
 	}
 	
