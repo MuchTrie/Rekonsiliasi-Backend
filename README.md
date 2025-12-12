@@ -84,7 +84,7 @@ JWT_SECRET=your-super-secret-key-change-this-in-production-min-32-chars
 # Server Configuration
 PORT=8080
 GIN_MODE=debug  
-
+```
 ### 5. Build Aplikasi
 
 ```bash
