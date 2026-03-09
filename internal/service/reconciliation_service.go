@@ -81,17 +81,9 @@ func (s *ReconciliationService) ProcessReconciliation(req *dto.ReconciliationReq
 		jobID = req.JobID
 		s.log.Infof("Re-processing job rekonsiliasi %s (overwrite mode)", jobID)
 	} else {
-		// Mode auto: Cek apakah sudah ada job untuk tanggal hari ini
-		existingJobID := s.findTodayJobID(now)
-		if existingJobID != "" {
-			// Sudah ada job untuk hari ini, gunakan job tersebut (auto-replace)
-			jobID = existingJobID
-			s.log.Infof("Found existing job for today: %s, will overwrite", jobID)
-		} else {
-			// Belum ada job untuk hari ini, buat baru
-			jobID = s.generateJobID(now)
-			s.log.Infof("Creating new job: %s", jobID)
-		}
+		// Mode auto: Selalu buat job ID baru agar tidak menimpa hasil sebelumnya
+		jobID = s.generateJobID(now)
+		s.log.Infof("Creating new job: %s", jobID)
 	}
 	
 	jobDir := filepath.Join(s.resultsDir, jobID)
@@ -201,7 +193,7 @@ func (s *ReconciliationService) getLastJobID() int {
 	}
 	
 	maxID := 0
-	pattern := regexp.MustCompile(`^(\d{4})-\d{2}-\d{2}-\d{4}$`)
+	pattern := regexp.MustCompile(`^(\d{4})-\d{2}-\d{2}-\d{4}$`)  // format: XXXX-DD-MM-YYYY
 	
 	for _, entry := range entries {
 		if !entry.IsDir() {
